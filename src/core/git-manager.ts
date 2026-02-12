@@ -3,13 +3,12 @@
  * 支持 Worktree、自动提交、分支管理、冲突检测
  */
 
-import { execSync, exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { existsSync } from 'fs';
 import path from 'path';
 import type { GitCommit, WorktreeInfo } from './types.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface GitManagerConfig {
   repoPath: string;
@@ -32,23 +31,22 @@ export interface MergeResult {
 export class GitManager {
   private repoPath: string;
   private defaultBranch: string;
-  private autoCommit: boolean;
+  private autoCommitEnabled: boolean;
 
   constructor(config: GitManagerConfig) {
     this.repoPath = config.repoPath;
     this.defaultBranch = config.defaultBranch || 'main';
-    this.autoCommit = config.autoCommit ?? true;
+    this.autoCommitEnabled = config.autoCommit ?? true;
   }
 
   /**
-   * 执行 Git 命令
+   * 执行 Git 命令（使用 execFile 避免命令注入）
    */
   private async execGit(args: string[], cwd?: string): Promise<string> {
     const workdir = cwd || this.repoPath;
-    const command = `git ${args.join(' ')}`;
 
     try {
-      const { stdout } = await execAsync(command, {
+      const { stdout } = await execFileAsync('git', args, {
         cwd: workdir,
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024,
@@ -56,26 +54,7 @@ export class GitManager {
       return stdout.trim();
     } catch (error: unknown) {
       const err = error as { stderr?: string; message: string };
-      throw new Error(`Git command failed: ${command}\n${err.stderr || err.message}`);
-    }
-  }
-
-  /**
-   * 同步执行 Git 命令
-   */
-  private execGitSync(args: string[], cwd?: string): string {
-    const workdir = cwd || this.repoPath;
-    const command = `git ${args.join(' ')}`;
-
-    try {
-      return execSync(command, {
-        cwd: workdir,
-        encoding: 'utf-8',
-        maxBuffer: 10 * 1024 * 1024,
-      }).trim();
-    } catch (error: unknown) {
-      const err = error as { stderr?: Buffer; message: string };
-      throw new Error(`Git command failed: ${command}\n${err.stderr?.toString() || err.message}`);
+      throw new Error(`Git command failed: git ${args.join(' ')}\n${err.stderr || err.message}`);
     }
   }
 
@@ -375,9 +354,10 @@ export class GitManager {
     } = {},
     cwd?: string
   ): Promise<GitCommit[]> {
+    const separator = '|||';
     const args = [
       'log',
-      '--format=%H|%s|%an <%ae>|%at',
+      `--format=%H${separator}%s${separator}%an <%ae>${separator}%at`,
       `--max-count=${options.limit || 50}`,
     ];
 
@@ -391,7 +371,7 @@ export class GitManager {
     const commits: GitCommit[] = [];
 
     for (const line of output.split('\n').filter(Boolean)) {
-      const [hash, message, author, timestamp] = line.split('|');
+      const [hash, message, author, timestamp] = line.split('|||');
       const files = await this.getCommitFiles(hash, cwd);
       const branch = await this.getCurrentBranch(cwd);
 
@@ -412,13 +392,14 @@ export class GitManager {
    * 获取单个提交信息
    */
   async getCommit(hash: string, cwd?: string): Promise<GitCommit | null> {
+    const separator = '|||';
     try {
       const output = await this.execGit(
-        ['log', '-1', '--format=%H|%s|%an <%ae>|%at', hash],
+        ['log', '-1', `--format=%H${separator}%s${separator}%an <%ae>${separator}%at`, hash],
         cwd
       );
 
-      const [commitHash, message, author, timestamp] = output.split('|');
+      const [commitHash, message, author, timestamp] = output.split('|||');
       const files = await this.getCommitFiles(commitHash, cwd);
       const branch = await this.getCurrentBranch(cwd);
 

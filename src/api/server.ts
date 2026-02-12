@@ -21,7 +21,7 @@ export class ApiServer {
   constructor(config: Partial<ApiConfig> = {}) {
     this.config = {
       port: config.port || 3000,
-      host: config.host || '0.0.0.0',
+      host: config.host || '127.0.0.1',  // 默认只绑定本地，避免暴露到网络
     };
     this.setupMiddleware();
     this.setupRoutes();
