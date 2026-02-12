@@ -22,8 +22,8 @@ function MessageBubble({ message }: { message: Message }) {
 
   if (message.agentId === 'system') {
     return (
-      <div className="flex justify-center my-4">
-        <div className="bg-cafe-latte/50 text-cafe-espresso/70 text-sm px-4 py-2 rounded-full">
+      <div className="flex justify-center my-3 sm:my-4">
+        <div className="bg-cafe-latte/50 text-cafe-espresso/70 text-xs sm:text-sm px-3 sm:px-4 py-1.5 sm:py-2 rounded-full max-w-[90%] text-center">
           {message.content}
         </div>
       </div>
@@ -32,9 +32,9 @@ function MessageBubble({ message }: { message: Message }) {
 
   if (message.agentId === 'user') {
     return (
-      <div className="flex justify-end mb-4 message-bubble">
-        <div className="max-w-[70%] bg-cafe-mocha text-white px-4 py-3 rounded-2xl rounded-br-md shadow-sm">
-          <p className="whitespace-pre-wrap">{message.content}</p>
+      <div className="flex justify-end mb-3 sm:mb-4 message-bubble">
+        <div className="max-w-[85%] sm:max-w-[75%] md:max-w-[70%] lg:max-w-[65%] bg-cafe-mocha text-white px-3 sm:px-4 py-2 sm:py-3 rounded-2xl rounded-br-md shadow-sm">
+          <p className="whitespace-pre-wrap text-sm sm:text-base break-words">{message.content}</p>
           <div className="text-xs text-white/60 mt-1 text-right">
             {message.timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
           </div>
@@ -69,19 +69,19 @@ function MessageBubble({ message }: { message: Message }) {
   }
 
   return (
-    <div className="flex gap-3 mb-4 message-bubble">
-      <div className="flex-shrink-0 w-10 h-10 rounded-full bg-cafe-cream flex items-center justify-center text-xl shadow-sm">
+    <div className="flex gap-2 sm:gap-3 mb-3 sm:mb-4 message-bubble">
+      <div className="flex-shrink-0 w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-cafe-cream flex items-center justify-center text-lg sm:text-xl shadow-sm">
         {agent?.avatar || '🤖'}
       </div>
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 max-w-[85%] sm:max-w-[80%] md:max-w-[75%] lg:max-w-[70%]">
         <div className="flex items-center gap-2 mb-1">
-          <span className={`font-medium ${textColorClass}`}>{agent?.name || message.agentId}</span>
+          <span className={`font-medium text-sm sm:text-base ${textColorClass}`}>{agent?.name || message.agentId}</span>
           <span className="text-xs text-gray-400">
             {message.timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
-        <div className={`${colorClass} border px-4 py-3 rounded-2xl rounded-tl-md shadow-sm`}>
-          <p className="whitespace-pre-wrap text-gray-800">{renderContent(message.content)}</p>
+        <div className={`${colorClass} border px-3 sm:px-4 py-2 sm:py-3 rounded-2xl rounded-tl-md shadow-sm`}>
+          <p className="whitespace-pre-wrap text-gray-800 text-sm sm:text-base break-words">{renderContent(message.content)}</p>
         </div>
       </div>
     </div>
@@ -329,13 +329,13 @@ export default function ChatArea() {
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* 频道标题 */}
-      <div className="px-4 py-3 border-b border-cafe-latte bg-white/80 flex items-center gap-2">
-        <Hash size={20} className="text-cafe-mocha" />
-        <span className="font-semibold text-cafe-espresso">{currentChannel}</span>
+      <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-cafe-latte bg-white/80 flex items-center gap-2">
+        <Hash size={18} className="sm:w-5 sm:h-5 text-cafe-mocha flex-shrink-0" />
+        <span className="font-semibold text-cafe-espresso text-sm sm:text-base truncate">{currentChannel}</span>
         {currentTaskId && (
           <button
             onClick={() => setCurrentTask(null)}
-            className="ml-auto text-sm text-gray-500 hover:text-cafe-mocha"
+            className="ml-auto text-xs sm:text-sm text-gray-500 hover:text-cafe-mocha whitespace-nowrap"
           >
             返回 #general
           </button>
@@ -343,12 +343,12 @@ export default function ChatArea() {
       </div>
 
       {/* 消息列表 */}
-      <div className="flex-1 overflow-y-auto p-4 paw-pattern">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 paw-pattern">
         {!currentTaskId && messages.length === 1 && (
-          <div className="text-center text-gray-400 py-8">
-            <p className="text-lg mb-2">欢迎来到 #general</p>
-            <p className="text-sm">使用 @claude @codex @gemini 下发任务</p>
-            <p className="text-sm">例如: @claude 帮我写一个登录页面</p>
+          <div className="text-center text-gray-400 py-6 sm:py-8">
+            <p className="text-base sm:text-lg mb-2">欢迎来到 #general</p>
+            <p className="text-xs sm:text-sm">使用 @claude @codex @gemini 下发任务</p>
+            <p className="text-xs sm:text-sm">例如: @claude 帮我写一个登录页面</p>
           </div>
         )}
         {messages.map((message) => (
@@ -358,34 +358,34 @@ export default function ChatArea() {
       </div>
 
       {/* 输入区域 */}
-      <div className="border-t border-cafe-latte bg-white/90 backdrop-blur p-4">
+      <div className="border-t border-cafe-latte bg-white/90 backdrop-blur p-2 sm:p-4">
         <div className="relative">
           {/* @ 提及下拉菜单 */}
           {showMentions && filteredAgents.length > 0 && (
-            <div className="absolute bottom-full left-0 mb-2 bg-white rounded-lg shadow-lg border border-cafe-latte overflow-hidden">
+            <div className="absolute bottom-full left-0 mb-2 bg-white rounded-lg shadow-lg border border-cafe-latte overflow-hidden max-w-[280px] sm:max-w-none">
               {filteredAgents.map((agent) => (
                 <button
                   key={agent.id}
                   onClick={() => insertMention(agent.id)}
-                  className="w-full px-4 py-2 flex items-center gap-3 hover:bg-cafe-cream transition-colors"
+                  className="w-full px-3 sm:px-4 py-2 flex items-center gap-2 sm:gap-3 hover:bg-cafe-cream transition-colors"
                 >
-                  <span className="text-xl">{agent.avatar}</span>
-                  <div className="text-left">
-                    <div className="font-medium text-cafe-espresso">{agent.name}</div>
-                    <div className="text-xs text-gray-500">{agent.role}</div>
+                  <span className="text-lg sm:text-xl">{agent.avatar}</span>
+                  <div className="text-left min-w-0">
+                    <div className="font-medium text-cafe-espresso text-sm truncate">{agent.name}</div>
+                    <div className="text-xs text-gray-500 truncate">{agent.role}</div>
                   </div>
                 </button>
               ))}
             </div>
           )}
 
-          <div className="flex items-end gap-3">
+          <div className="flex items-end gap-2 sm:gap-3">
             <button
               onClick={() => setShowMentions(!showMentions)}
-              className="p-2 text-cafe-mocha hover:bg-cafe-latte rounded-lg transition-colors"
+              className="p-1.5 sm:p-2 text-cafe-mocha hover:bg-cafe-latte rounded-lg transition-colors flex-shrink-0"
               title="提及 Agent"
             >
-              <AtSign size={20} />
+              <AtSign size={18} className="sm:w-5 sm:h-5" />
             </button>
             <textarea
               ref={inputRef}
@@ -393,24 +393,24 @@ export default function ChatArea() {
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               placeholder={`在 #${currentChannel} 发送消息...`}
-              className="flex-1 resize-none border border-cafe-latte rounded-xl px-4 py-3 chat-input bg-white/80 max-h-32"
+              className="flex-1 resize-none border border-cafe-latte rounded-xl px-3 sm:px-4 py-2 sm:py-3 chat-input bg-white/80 max-h-24 sm:max-h-32 text-sm sm:text-base min-w-0"
               rows={1}
               disabled={isExecuting}
             />
             <button
               onClick={handleSend}
               disabled={!input.trim() || isExecuting}
-              className="p-3 bg-cafe-mocha text-white rounded-xl hover:bg-cafe-espresso transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              className="p-2 sm:p-3 bg-cafe-mocha text-white rounded-xl hover:bg-cafe-espresso transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 flex-shrink-0"
             >
               {isExecuting ? (
-                <Loader2 size={20} className="animate-spin" />
+                <Loader2 size={18} className="sm:w-5 sm:h-5 animate-spin" />
               ) : (
-                <Send size={20} />
+                <Send size={18} className="sm:w-5 sm:h-5" />
               )}
             </button>
           </div>
         </div>
-        <div className="mt-2 text-xs text-gray-400 text-center">
+        <div className="mt-1.5 sm:mt-2 text-xs text-gray-400 text-center hidden sm:block">
           按 Enter 发送 | @claude @codex @gemini 下发任务，自动创建频道跟踪
         </div>
       </div>

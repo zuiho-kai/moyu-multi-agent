@@ -47,9 +47,13 @@ const initialMessages: Message[] = [
 
 interface ExtendedAppState extends AppState {
   currentTask: Task | null
+  leftSidebarCollapsed: boolean
+  rightSidebarCollapsed: boolean
   loadTasks: () => Promise<void>
   createTask: (module: string, description: string) => Promise<Task | null>
   loadChatHistory: (taskId: string) => Promise<void>
+  toggleLeftSidebar: () => void
+  toggleRightSidebar: () => void
 }
 
 export const useAppStore = create<ExtendedAppState>((set, get) => ({
@@ -58,6 +62,8 @@ export const useAppStore = create<ExtendedAppState>((set, get) => ({
   tasks: [],
   currentTaskId: null,
   settingsOpen: false,
+  leftSidebarCollapsed: false,
+  rightSidebarCollapsed: false,
 
   // 计算属性：当前任务
   get currentTask() {
@@ -184,6 +190,10 @@ export const useAppStore = create<ExtendedAppState>((set, get) => ({
   },
 
   toggleSettings: () => set((state) => ({ settingsOpen: !state.settingsOpen })),
+
+  toggleLeftSidebar: () => set((state) => ({ leftSidebarCollapsed: !state.leftSidebarCollapsed })),
+
+  toggleRightSidebar: () => set((state) => ({ rightSidebarCollapsed: !state.rightSidebarCollapsed })),
 
   setAgentStatus: (id, status, currentTask) =>
     set((state) => ({
