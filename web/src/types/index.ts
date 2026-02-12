@@ -39,7 +39,7 @@ export interface AppState {
 
   // Actions
   addMessage: (message: Omit<Message, 'id' | 'timestamp'>) => void
-  updateAgent: (id: AgentType, updates: Partial<Agent>) => void
+  updateAgent: (id: AgentType, updates: Partial<Agent>) => Promise<void>
   addTask: (task: Omit<Task, 'id' | 'createdAt'>) => void
   updateTask: (id: string, updates: Partial<Task>) => void
   setCurrentTask: (id: string | null) => void

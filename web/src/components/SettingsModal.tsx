@@ -36,15 +36,26 @@ interface Resource {
   isDefault: boolean
 }
 
-function AgentSettings({ agent, onUpdate }: { agent: Agent; onUpdate: (updates: Partial<Agent>) => void }) {
+function AgentSettings({ agent, onUpdate }: { agent: Agent; onUpdate: (updates: Partial<Agent>) => Promise<void> }) {
   const [localAgent, setLocalAgent] = useState(agent)
+  const [saving, setSaving] = useState(false)
+
+  // 当 agent prop 变化时同步本地状态
+  useEffect(() => {
+    setLocalAgent(agent)
+  }, [agent])
 
   const handleChange = <K extends keyof Agent>(key: K, value: Agent[K]) => {
     setLocalAgent((prev) => ({ ...prev, [key]: value }))
   }
 
-  const handleSave = () => {
-    onUpdate(localAgent)
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      await onUpdate(localAgent)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const agentColorMap: Record<AgentType, string> = {
@@ -131,10 +142,11 @@ function AgentSettings({ agent, onUpdate }: { agent: Agent; onUpdate: (updates: 
         {/* 保存按钮 */}
         <button
           onClick={handleSave}
-          className="w-full flex items-center justify-center gap-2 bg-cafe-mocha text-white py-2 rounded-lg hover:bg-cafe-espresso transition-colors"
+          disabled={saving}
+          className="w-full flex items-center justify-center gap-2 bg-cafe-mocha text-white py-2 rounded-lg hover:bg-cafe-espresso transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Save size={18} />
-          保存设置
+          {saving ? '保存中...' : '保存设置'}
         </button>
       </div>
     </div>
@@ -374,12 +386,17 @@ function ResourcePoolSettings() {
 }
 
 export default function SettingsModal() {
-  const { agents, updateAgent, toggleSettings } = useAppStore()
+  const { agents, updateAgent, toggleSettings, loadAgentSettings } = useAppStore()
   const [activeTab, setActiveTab] = useState<'agents' | 'resources'>('agents')
   const [activeAgent, setActiveAgent] = useState<AgentType>('claude')
 
-  const handleUpdate = (agentId: AgentType, updates: Partial<Agent>) => {
-    updateAgent(agentId, updates)
+  // 组件加载时从后端加载 Agent 设置
+  useEffect(() => {
+    loadAgentSettings()
+  }, [loadAgentSettings])
+
+  const handleUpdate = async (agentId: AgentType, updates: Partial<Agent>) => {
+    await updateAgent(agentId, updates)
   }
 
   return (
@@ -460,7 +477,7 @@ export default function SettingsModal() {
         {/* 底部说明 */}
         <div className="px-6 py-4 bg-white/50 border-t border-cafe-latte text-center text-sm text-gray-500">
           {activeTab === 'agents'
-            ? '设置会自动保存到本地，刷新页面后仍然有效喵～'
+            ? '设置会保存到数据库，刷新页面后仍然有效喵～'
             : 'API 资源会保存到数据库，可供所有 Agent 使用'}
         </div>
       </div>
