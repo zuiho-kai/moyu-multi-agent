@@ -1,33 +1,35 @@
 import { create } from 'zustand'
 import type { AppState, AgentType, Agent, Message, Task } from '../types'
 
+const API_BASE = 'http://127.0.0.1:3000/api'
+
 const defaultAgents: Record<AgentType, Agent> = {
   claude: {
     id: 'claude',
-    name: '小布 (Claude)',
+    name: '布偶猫',
     avatar: '🐱',
-    role: '架构师 & 代码审查',
-    workflow: '分析需求 → 设计架构 → 审查代码 → 提供建议',
-    model: 'claude-3-opus',
+    role: '主架构师，核心开发',
+    workflow: '分析需求 → 设计架构 → 编写代码 → 审查',
+    model: 'claude-sonnet-4-5-20250929',
     color: 'ragdoll',
     status: 'idle',
   },
   codex: {
     id: 'codex',
-    name: '大毛 (Codex)',
-    avatar: '🦁',
-    role: '全栈开发',
-    workflow: '接收任务 → 编写代码 → 单元测试 → 提交审查',
-    model: 'codex-latest',
+    name: '缅因猫',
+    avatar: '🐈',
+    role: 'Code Review，安全审查',
+    workflow: '代码审查 → 安全检查 → 性能分析 → 建议',
+    model: 'codex',
     color: 'maine',
     status: 'idle',
   },
   gemini: {
     id: 'gemini',
-    name: '暹暹 (Gemini)',
-    avatar: '🐈',
-    role: '测试 & 文档',
-    workflow: '编写测试 → 执行测试 → 生成文档 → 质量报告',
+    name: '暹罗猫',
+    avatar: '😺',
+    role: '视觉设计，创意',
+    workflow: '设计方案 → 原型制作 → 测试 → 文档',
     model: 'gemini-pro',
     color: 'siamese',
     status: 'idle',
@@ -38,60 +40,101 @@ const initialMessages: Message[] = [
   {
     id: '1',
     agentId: 'system',
-    content: '欢迎来到猫咖工作室！三只猫咪已经准备好为您服务了喵～',
-    timestamp: new Date(),
-  },
-  {
-    id: '2',
-    agentId: 'claude',
-    content: '大家好，我是小布，一只布偶猫。我负责架构设计和代码审查，有什么需要帮忙的吗？',
-    timestamp: new Date(),
-  },
-  {
-    id: '3',
-    agentId: 'codex',
-    content: '嗨！我是大毛，缅因猫一枚。写代码找我就对了！💪',
-    timestamp: new Date(),
-  },
-  {
-    id: '4',
-    agentId: 'gemini',
-    content: '喵～我是暹暹，优雅的暹罗猫。测试和文档是我的专长哦。',
+    content: '欢迎来到猫咖工作室！三只猫咪已经准备好为您服务了喵～ 使用 @claude @codex @gemini 唤起猫咪执行任务',
     timestamp: new Date(),
   },
 ]
 
-const initialTasks: Task[] = [
-  {
-    id: 't1',
-    title: '项目初始化',
-    status: 'completed',
-    assignedTo: ['claude'],
-    createdAt: new Date(Date.now() - 3600000),
-    completedAt: new Date(Date.now() - 3000000),
-  },
-  {
-    id: 't2',
-    title: '前端界面开发',
-    status: 'in-progress',
-    assignedTo: ['codex', 'claude'],
-    createdAt: new Date(Date.now() - 1800000),
-  },
-  {
-    id: 't3',
-    title: '编写单元测试',
-    status: 'pending',
-    assignedTo: ['gemini'],
-    createdAt: new Date(),
-  },
-]
+interface ExtendedAppState extends AppState {
+  currentTask: Task | null
+  loadTasks: () => Promise<void>
+  createTask: (module: string, description: string) => Promise<Task | null>
+  loadChatHistory: (taskId: string) => Promise<void>
+}
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<ExtendedAppState>((set, get) => ({
   agents: defaultAgents,
   messages: initialMessages,
-  tasks: initialTasks,
-  currentTaskId: 't2',
+  tasks: [],
+  currentTaskId: null,
   settingsOpen: false,
+
+  // 计算属性：当前任务
+  get currentTask() {
+    const state = get()
+    if (!state.currentTaskId) return null
+    return state.tasks.find(t => t.id === state.currentTaskId) || null
+  },
+
+  // 从 API 加载任务列表
+  loadTasks: async () => {
+    try {
+      const response = await fetch(`${API_BASE}/tasks`)
+      if (response.ok) {
+        const tasks = await response.json()
+        set({
+          tasks: tasks.map((t: { id: string; module: string; status: string; createdAt: number }) => ({
+            id: t.id,
+            title: t.module,
+            status: t.status === 'pending' ? 'pending' : t.status === 'in_progress' ? 'in-progress' : 'completed',
+            assignedTo: [],
+            createdAt: new Date(t.createdAt),
+          })),
+        })
+      }
+    } catch (error) {
+      console.error('Failed to load tasks:', error)
+    }
+  },
+
+  // 创建新任务
+  createTask: async (module: string, description: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ module, description }),
+      })
+      if (response.ok) {
+        const task = await response.json()
+        const newTask: Task = {
+          id: task.id,
+          title: task.module,
+          status: 'pending',
+          assignedTo: [],
+          createdAt: new Date(task.createdAt),
+        }
+        set((state) => ({
+          tasks: [...state.tasks, newTask],
+          currentTaskId: task.id,
+        }))
+        return newTask
+      }
+    } catch (error) {
+      console.error('Failed to create task:', error)
+    }
+    return null
+  },
+
+  // 加载聊天历史
+  loadChatHistory: async (taskId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/chat/${taskId}`)
+      if (response.ok) {
+        const messages = await response.json()
+        set({
+          messages: messages.map((m: { id: string; role: string; agent_id?: string; content: string; timestamp: number }) => ({
+            id: m.id,
+            agentId: m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : (m.agent_id || 'system'),
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+          })),
+        })
+      }
+    } catch (error) {
+      console.error('Failed to load chat history:', error)
+    }
+  },
 
   addMessage: (message) =>
     set((state) => ({
@@ -132,7 +175,13 @@ export const useAppStore = create<AppState>((set) => ({
       ),
     })),
 
-  setCurrentTask: (id) => set({ currentTaskId: id }),
+  setCurrentTask: (id) => {
+    set({ currentTaskId: id })
+    // 加载该任务的聊天历史
+    if (id) {
+      get().loadChatHistory(id)
+    }
+  },
 
   toggleSettings: () => set((state) => ({ settingsOpen: !state.settingsOpen })),
 

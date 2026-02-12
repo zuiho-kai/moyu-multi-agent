@@ -17,6 +17,7 @@ export interface MultiAgentSystemConfig {
   maxConcurrentAgents?: number;
   apiPort?: number;
   gitAutoCommit?: boolean;
+  dbPath?: string;
 }
 
 export class MultiAgentSystem {
@@ -44,9 +45,12 @@ export class MultiAgentSystem {
       gitAutoCommit: config.gitAutoCommit ?? true,
     });
 
-    // 初始化 API 服务器
+    // 初始化 API 服务器（使用数据库持久化）
     this.apiServer = new ApiServer({
       port: config.apiPort || 3000,
+      host: '127.0.0.1',
+      dbPath: config.dbPath || `${config.projectRoot}/data/catcafe.db`,
+      workdir: config.projectRoot,
     });
 
     this.setupEventHandlers();
@@ -57,7 +61,6 @@ export class MultiAgentSystem {
 
     this.scheduler.on('taskAdded', (task) => {
       logger.info(`Task added: ${task.module}`);
-      this.apiServer.registerTask(task);
     });
 
     this.scheduler.on('taskCompleted', async (task) => {
@@ -86,8 +89,7 @@ export class MultiAgentSystem {
    * 注册 Agent
    */
   registerAgent(config: AgentConfig): void {
-    const instance = this.scheduler.registerAgent(config);
-    this.apiServer.registerAgent(instance);
+    this.scheduler.registerAgent(config);
   }
 
   /**
@@ -171,6 +173,7 @@ export class MultiAgentSystem {
     logger.info('Stopping Multi-Agent System...');
 
     await this.scheduler.shutdown();
+    this.apiServer.close();
     await this.logManager.close();
 
     logger.info('Multi-Agent System stopped');

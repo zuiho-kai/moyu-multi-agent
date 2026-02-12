@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, AtSign } from 'lucide-react'
+import { Send, AtSign, Loader2, Hash } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import type { AgentType, Message } from '../types'
+
+const API_BASE = 'http://127.0.0.1:3000/api'
 
 const agentColors: Record<AgentType, string> = {
   claude: 'bg-ragdoll-100 border-ragdoll-300',
@@ -42,8 +44,8 @@ function MessageBubble({ message }: { message: Message }) {
   }
 
   const agent = agents[message.agentId as AgentType]
-  const colorClass = agentColors[message.agentId as AgentType]
-  const textColorClass = agentTextColors[message.agentId as AgentType]
+  const colorClass = agentColors[message.agentId as AgentType] || 'bg-gray-100 border-gray-300'
+  const textColorClass = agentTextColors[message.agentId as AgentType] || 'text-gray-700'
 
   // 解析 @mentions
   const renderContent = (content: string) => {
@@ -69,11 +71,11 @@ function MessageBubble({ message }: { message: Message }) {
   return (
     <div className="flex gap-3 mb-4 message-bubble">
       <div className="flex-shrink-0 w-10 h-10 rounded-full bg-cafe-cream flex items-center justify-center text-xl shadow-sm">
-        {agent.avatar}
+        {agent?.avatar || '🤖'}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className={`font-medium ${textColorClass}`}>{agent.name}</span>
+          <span className={`font-medium ${textColorClass}`}>{agent?.name || message.agentId}</span>
           <span className="text-xs text-gray-400">
             {message.timestamp.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
           </span>
@@ -87,10 +89,11 @@ function MessageBubble({ message }: { message: Message }) {
 }
 
 export default function ChatArea() {
-  const { messages, agents, addMessage, setAgentStatus } = useAppStore()
+  const { messages, agents, currentTaskId, tasks, addMessage, setAgentStatus, setCurrentTask, loadTasks } = useAppStore()
   const [input, setInput] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
+  const [isExecuting, setIsExecuting] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -123,47 +126,152 @@ export default function ChatArea() {
     inputRef.current?.focus()
   }
 
-  const simulateAgentResponse = (mentionedAgents: AgentType[]) => {
-    // 模拟 Agent 响应
-    mentionedAgents.forEach((agentId, index) => {
-      // 设置思考状态
-      setTimeout(() => {
-        setAgentStatus(agentId, 'thinking', '正在思考...')
-      }, index * 500)
-
-      // 设置工作状态
-      setTimeout(() => {
-        setAgentStatus(agentId, 'working', '正在处理您的请求...')
-      }, index * 500 + 1000)
-
-      // 发送响应
-      setTimeout(() => {
-        const responses: Record<AgentType, string[]> = {
-          claude: [
-            '好的，让我来分析一下这个问题...',
-            '从架构角度来看，我建议我们可以这样处理...',
-            '我已经审查了代码，有几点建议想和大家分享。',
-          ],
-          codex: [
-            '收到！我这就开始写代码 💻',
-            '代码已经写好了，@gemini 可以帮忙测试一下吗？',
-            '这个功能我来实现，预计需要 30 分钟。',
-          ],
-          gemini: [
-            '喵～我来写测试用例吧！',
-            '测试通过了！覆盖率达到 85%。',
-            '文档已经更新完毕，请查收～',
-          ],
-        }
-        const randomResponse = responses[agentId][Math.floor(Math.random() * responses[agentId].length)]
-        addMessage({ agentId, content: randomResponse })
-        setAgentStatus(agentId, 'idle')
-      }, index * 500 + 2500)
-    })
+  /**
+   * 从消息中提取任务名称
+   */
+  const extractTaskName = (content: string): string => {
+    // 移除 @mentions
+    const withoutMentions = content.replace(/@\w+/g, '').trim()
+    // 取前 30 个字符作为任务名
+    const name = withoutMentions.slice(0, 30)
+    return name || `任务-${Date.now()}`
   }
 
-  const handleSend = () => {
-    if (!input.trim()) return
+  /**
+   * 创建任务并执行 Agent
+   */
+  const createTaskAndExecute = async (agentId: AgentType, prompt: string) => {
+    setAgentStatus(agentId, 'thinking', '正在创建任务...')
+    setIsExecuting(true)
+
+    try {
+      // 1. 创建任务
+      const taskName = extractTaskName(prompt)
+      const taskResponse = await fetch(`${API_BASE}/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          module: taskName,
+          description: prompt,
+          prompt: prompt,
+        }),
+      })
+
+      if (!taskResponse.ok) {
+        throw new Error('创建任务失败')
+      }
+
+      const task = await taskResponse.json()
+      console.log('[ChatArea] Task created:', task)
+
+      // 2. 刷新任务列表
+      await loadTasks()
+
+      // 3. 切换到新任务
+      setCurrentTask(task.id)
+
+      // 4. 添加系统消息
+      addMessage({
+        agentId: 'system',
+        content: `已创建任务频道: #${taskName}`,
+      })
+
+      setAgentStatus(agentId, 'working', '正在执行...')
+
+      // 5. 执行 Agent
+      const execResponse = await fetch(`${API_BASE}/chat/${task.id}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId,
+          prompt,
+        }),
+      })
+
+      if (!execResponse.ok) {
+        const error = await execResponse.json()
+        throw new Error(error.error || '执行失败')
+      }
+
+      const result = await execResponse.json()
+
+      // 6. 添加 Agent 响应
+      if (result.execution?.response) {
+        addMessage({
+          agentId,
+          content: result.execution.response,
+        })
+      }
+
+      setAgentStatus(agentId, 'idle')
+
+    } catch (error) {
+      console.error('[ChatArea] Error:', error)
+      addMessage({
+        agentId: 'system',
+        content: `执行失败: ${error instanceof Error ? error.message : '未知错误'}`,
+      })
+      setAgentStatus(agentId, 'idle')
+    } finally {
+      setIsExecuting(false)
+    }
+  }
+
+  /**
+   * 在当前任务中执行 Agent
+   */
+  const executeInCurrentTask = async (agentId: AgentType, prompt: string) => {
+    if (!currentTaskId) {
+      // 没有当前任务，创建新任务
+      await createTaskAndExecute(agentId, prompt)
+      return
+    }
+
+    setAgentStatus(agentId, 'thinking', '正在思考...')
+    setIsExecuting(true)
+
+    try {
+      const response = await fetch(`${API_BASE}/chat/${currentTaskId}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentId,
+          prompt,
+        }),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.error || '执行失败')
+      }
+
+      const result = await response.json()
+
+      setAgentStatus(agentId, 'working', '正在处理...')
+
+      if (result.execution?.response) {
+        addMessage({
+          agentId,
+          content: result.execution.response,
+        })
+      }
+
+      setAgentStatus(agentId, 'idle')
+
+    } catch (error) {
+      console.error('[ChatArea] Execution error:', error)
+      addMessage({
+        agentId: 'system',
+        content: `执行失败: ${error instanceof Error ? error.message : '未知错误'}`,
+      })
+      setAgentStatus(agentId, 'idle')
+    } finally {
+      setIsExecuting(false)
+    }
+  }
+
+  const handleSend = async () => {
+    if (!input.trim() || isExecuting) return
 
     // 解析 mentions
     const mentionRegex = /@(\w+)/g
@@ -176,17 +284,27 @@ export default function ChatArea() {
       }
     }
 
+    // 添加用户消息
     addMessage({
       agentId: 'user',
       content: input,
       mentions: mentions.length > 0 ? mentions : undefined,
     })
 
+    const prompt = input
     setInput('')
 
-    // 如果有 mention，模拟 Agent 响应
+    // 如果有 @mention，执行 Agent
     if (mentions.length > 0) {
-      simulateAgentResponse(mentions)
+      for (const agentId of mentions) {
+        // 如果在 #general（没有选中任务），创建新任务
+        // 如果在任务频道中，在当前任务执行
+        if (!currentTaskId) {
+          await createTaskAndExecute(agentId, prompt)
+        } else {
+          await executeInCurrentTask(agentId, prompt)
+        }
+      }
     }
   }
 
@@ -203,10 +321,36 @@ export default function ChatArea() {
       agent.name.toLowerCase().includes(mentionFilter)
   )
 
+  // 获取当前频道名称
+  const currentChannel = currentTaskId
+    ? tasks.find(t => t.id === currentTaskId)?.title || '任务'
+    : 'general'
+
   return (
     <div className="flex-1 flex flex-col h-full">
+      {/* 频道标题 */}
+      <div className="px-4 py-3 border-b border-cafe-latte bg-white/80 flex items-center gap-2">
+        <Hash size={20} className="text-cafe-mocha" />
+        <span className="font-semibold text-cafe-espresso">{currentChannel}</span>
+        {currentTaskId && (
+          <button
+            onClick={() => setCurrentTask(null)}
+            className="ml-auto text-sm text-gray-500 hover:text-cafe-mocha"
+          >
+            返回 #general
+          </button>
+        )}
+      </div>
+
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4 paw-pattern">
+        {!currentTaskId && messages.length === 1 && (
+          <div className="text-center text-gray-400 py-8">
+            <p className="text-lg mb-2">欢迎来到 #general</p>
+            <p className="text-sm">使用 @claude @codex @gemini 下发任务</p>
+            <p className="text-sm">例如: @claude 帮我写一个登录页面</p>
+          </div>
+        )}
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}
@@ -248,21 +392,26 @@ export default function ChatArea() {
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder="输入消息，使用 @agent 唤起特定猫咪..."
+              placeholder={`在 #${currentChannel} 发送消息...`}
               className="flex-1 resize-none border border-cafe-latte rounded-xl px-4 py-3 chat-input bg-white/80 max-h-32"
               rows={1}
+              disabled={isExecuting}
             />
             <button
               onClick={handleSend}
-              disabled={!input.trim()}
-              className="p-3 bg-cafe-mocha text-white rounded-xl hover:bg-cafe-espresso transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!input.trim() || isExecuting}
+              className="p-3 bg-cafe-mocha text-white rounded-xl hover:bg-cafe-espresso transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              <Send size={20} />
+              {isExecuting ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : (
+                <Send size={20} />
+              )}
             </button>
           </div>
         </div>
         <div className="mt-2 text-xs text-gray-400 text-center">
-          按 Enter 发送，Shift + Enter 换行 | 使用 @claude @codex @gemini 唤起猫咪
+          按 Enter 发送 | @claude @codex @gemini 下发任务，自动创建频道跟踪
         </div>
       </div>
     </div>

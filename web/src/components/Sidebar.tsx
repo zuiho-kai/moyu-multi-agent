@@ -1,147 +1,164 @@
-import { CheckCircle, Circle, Clock, AlertCircle, Plus } from 'lucide-react'
+import { useEffect, useCallback } from 'react'
+import { Hash, CheckCircle, Circle, Clock, Settings } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
-import type { Task } from '../types'
+import type { Task, AgentType } from '../types'
 
 const statusConfig = {
-  pending: { icon: Circle, color: 'text-gray-400', bg: 'bg-gray-100', label: '待处理' },
-  'in-progress': { icon: Clock, color: 'text-amber-500', bg: 'bg-amber-50', label: '进行中' },
-  completed: { icon: CheckCircle, color: 'text-green-500', bg: 'bg-green-50', label: '已完成' },
-  failed: { icon: AlertCircle, color: 'text-red-500', bg: 'bg-red-50', label: '失败' },
+  pending: { icon: Circle, color: 'text-gray-400', label: '待处理' },
+  'in-progress': { icon: Clock, color: 'text-amber-500', label: '进行中' },
+  completed: { icon: CheckCircle, color: 'text-green-500', label: '已完成' },
 }
 
-function TaskItem({ task }: { task: Task }) {
-  const { currentTaskId, setCurrentTask, agents } = useAppStore()
-  const config = statusConfig[task.status]
-  const Icon = config.icon
-  const isActive = currentTaskId === task.id
+function ChannelItem({ task, isActive, onClick }: { task: Task; isActive: boolean; onClick: () => void }) {
+  const { agents } = useAppStore()
+  const config = statusConfig[task.status] || statusConfig.pending
 
   return (
     <button
-      onClick={() => setCurrentTask(task.id)}
-      className={`w-full text-left p-3 rounded-lg transition-all ${
+      onClick={onClick}
+      className={`w-full text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors ${
         isActive
-          ? 'bg-cafe-mocha/20 border-l-4 border-cafe-mocha'
-          : 'hover:bg-cafe-latte/50'
+          ? 'bg-cafe-mocha/20 text-cafe-espresso'
+          : 'text-gray-600 hover:bg-cafe-latte/50 hover:text-cafe-espresso'
       }`}
     >
-      <div className="flex items-start gap-2">
-        <Icon size={18} className={`${config.color} mt-0.5 flex-shrink-0`} />
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-cafe-espresso truncate">{task.title}</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className={`text-xs px-2 py-0.5 rounded-full ${config.bg} ${config.color}`}>
-              {config.label}
+      <Hash size={16} className={isActive ? 'text-cafe-mocha' : 'text-gray-400'} />
+      <span className="flex-1 truncate text-sm">{task.title}</span>
+      {task.assignedTo && task.assignedTo.length > 0 && (
+        <div className="flex -space-x-1">
+          {task.assignedTo.slice(0, 2).map((agentId) => (
+            <span key={agentId} className="text-xs">
+              {agents[agentId as AgentType]?.avatar || '🤖'}
             </span>
-            {task.assignedTo && (
-              <div className="flex -space-x-1">
-                {task.assignedTo.map((agentId) => (
-                  <span
-                    key={agentId}
-                    className="text-sm"
-                    title={agents[agentId].name}
-                  >
-                    {agents[agentId].avatar}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
+          ))}
         </div>
-      </div>
+      )}
     </button>
   )
 }
 
 export default function Sidebar() {
-  const { tasks, addTask } = useAppStore()
+  const tasks = useAppStore((state) => state.tasks)
+  const currentTaskId = useAppStore((state) => state.currentTaskId)
+  const loadTasks = useAppStore((state) => state.loadTasks)
+  const setCurrentTask = useAppStore((state) => state.setCurrentTask)
+  const toggleSettings = useAppStore((state) => state.toggleSettings)
 
-  const handleAddTask = () => {
-    const title = prompt('请输入任务标题：')
-    if (title?.trim()) {
-      addTask({ title: title.trim(), status: 'pending' })
-    }
-  }
+  // 初始加载任务
+  useEffect(() => {
+    console.log('[Sidebar] Loading tasks...')
+    loadTasks().then(() => {
+      console.log('[Sidebar] Tasks loaded:', tasks.length)
+    }).catch((err) => {
+      console.error('[Sidebar] Failed to load tasks:', err)
+    })
+  }, [])
 
-  const pendingTasks = tasks.filter((t) => t.status === 'pending')
-  const inProgressTasks = tasks.filter((t) => t.status === 'in-progress')
+  const activeTasks = tasks.filter((t) => t.status === 'in-progress' || t.status === 'pending')
   const completedTasks = tasks.filter((t) => t.status === 'completed')
 
   return (
-    <div className="h-full flex flex-col">
-      {/* 标题 */}
-      <div className="p-4 border-b border-cafe-latte flex items-center justify-between">
-        <h2 className="font-semibold text-cafe-espresso flex items-center gap-2">
-          <span>📋</span> 任务列表
-        </h2>
-        <button
-          onClick={handleAddTask}
-          className="p-1.5 hover:bg-cafe-latte rounded-lg transition-colors"
-          title="新建任务"
-        >
-          <Plus size={18} className="text-cafe-espresso" />
-        </button>
+    <div className="h-full flex flex-col bg-cafe-cream/30">
+      {/* 服务器标题 */}
+      <div className="p-4 border-b border-cafe-latte">
+        <h1 className="font-bold text-cafe-espresso flex items-center gap-2">
+          <span className="text-xl">🐱</span>
+          <span>猫咖工作室</span>
+        </h1>
       </div>
 
-      {/* 任务列表 */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-4">
-        {/* 进行中 */}
-        {inProgressTasks.length > 0 && (
-          <div>
-            <h3 className="text-xs font-semibold text-amber-600 uppercase tracking-wider px-2 mb-2">
-              进行中 ({inProgressTasks.length})
-            </h3>
-            <div className="space-y-1">
-              {inProgressTasks.map((task) => (
-                <TaskItem key={task.id} task={task} />
+      {/* 频道列表 */}
+      <div className="flex-1 overflow-y-auto p-2">
+        {/* General 频道 */}
+        <div className="mb-4">
+          <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase">
+            主频道
+          </div>
+          <button
+            onClick={() => setCurrentTask(null)}
+            className={`w-full text-left px-2 py-1.5 rounded flex items-center gap-2 transition-colors ${
+              !currentTaskId
+                ? 'bg-cafe-mocha/20 text-cafe-espresso'
+                : 'text-gray-600 hover:bg-cafe-latte/50 hover:text-cafe-espresso'
+            }`}
+          >
+            <Hash size={16} className={!currentTaskId ? 'text-cafe-mocha' : 'text-gray-400'} />
+            <span className="text-sm font-medium">general</span>
+          </button>
+        </div>
+
+        {/* 活跃任务 */}
+        {activeTasks.length > 0 && (
+          <div className="mb-4">
+            <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase flex items-center justify-between">
+              <span>任务频道</span>
+              <span className="bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded text-xs">
+                {activeTasks.length}
+              </span>
+            </div>
+            <div className="space-y-0.5">
+              {activeTasks.map((task) => (
+                <ChannelItem
+                  key={task.id}
+                  task={task}
+                  isActive={currentTaskId === task.id}
+                  onClick={() => setCurrentTask(task.id)}
+                />
               ))}
             </div>
           </div>
         )}
 
-        {/* 待处理 */}
-        {pendingTasks.length > 0 && (
-          <div>
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider px-2 mb-2">
-              待处理 ({pendingTasks.length})
-            </h3>
-            <div className="space-y-1">
-              {pendingTasks.map((task) => (
-                <TaskItem key={task.id} task={task} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* 已完成 */}
+        {/* 已完成任务 */}
         {completedTasks.length > 0 && (
-          <div>
-            <h3 className="text-xs font-semibold text-green-600 uppercase tracking-wider px-2 mb-2">
-              已完成 ({completedTasks.length})
-            </h3>
-            <div className="space-y-1">
-              {completedTasks.map((task) => (
-                <TaskItem key={task.id} task={task} />
+          <div className="mb-4">
+            <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase flex items-center justify-between">
+              <span>已完成</span>
+              <span className="bg-green-100 text-green-600 px-1.5 py-0.5 rounded text-xs">
+                {completedTasks.length}
+              </span>
+            </div>
+            <div className="space-y-0.5 opacity-60">
+              {completedTasks.slice(0, 5).map((task) => (
+                <ChannelItem
+                  key={task.id}
+                  task={task}
+                  isActive={currentTaskId === task.id}
+                  onClick={() => setCurrentTask(task.id)}
+                />
               ))}
             </div>
           </div>
         )}
+
+        {tasks.length === 0 && (
+          <div className="text-center text-gray-400 py-4 text-sm">
+            <p>暂无任务</p>
+            <p className="mt-1 text-xs">在 #general 发送消息</p>
+            <p className="text-xs">@claude 下发任务</p>
+          </div>
+        )}
       </div>
 
-      {/* 统计 */}
-      <div className="p-4 border-t border-cafe-latte bg-cafe-cream/50">
-        <div className="grid grid-cols-3 gap-2 text-center text-xs">
-          <div>
-            <div className="text-lg font-bold text-amber-500">{inProgressTasks.length}</div>
-            <div className="text-gray-500">进行中</div>
+      {/* 底部用户区 */}
+      <div className="p-3 border-t border-cafe-latte bg-white/50">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full bg-cafe-mocha flex items-center justify-center text-white text-sm">
+              👤
+            </div>
+            <div className="text-sm">
+              <div className="font-medium text-cafe-espresso">用户</div>
+              <div className="text-xs text-gray-500">在线</div>
+            </div>
           </div>
-          <div>
-            <div className="text-lg font-bold text-gray-400">{pendingTasks.length}</div>
-            <div className="text-gray-500">待处理</div>
-          </div>
-          <div>
-            <div className="text-lg font-bold text-green-500">{completedTasks.length}</div>
-            <div className="text-gray-500">已完成</div>
-          </div>
+          <button
+            onClick={toggleSettings}
+            className="p-2 hover:bg-cafe-latte rounded-lg transition-colors"
+            title="设置"
+          >
+            <Settings size={18} className="text-gray-500" />
+          </button>
         </div>
       </div>
     </div>

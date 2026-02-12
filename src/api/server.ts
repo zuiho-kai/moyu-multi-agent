@@ -1,94 +1,53 @@
 /**
- * Web API 服务
- * 提供 HTTP 接口管理多 Agent 系统
+ * Web API 服务 v2
+ * 集成真实 CLI 执行 + 数据库持久化
  */
 
 import express, { Request, Response, Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import cors from 'cors';
-import type { TaskDefinition, AgentInstance, TaskStatus, AgentConfig } from '../core/types.js';
-import { getOperationLogger, OperationLog } from '../core/operation-logger.js';
+import { getDatabase, DatabaseManager } from '../core/database.js';
+import { AgentExecutorManager, StreamEvent } from '../core/agent-executor.js';
+import { getOperationLogger } from '../core/operation-logger.js';
 
 export interface ApiConfig {
   port: number;
   host: string;
+  dbPath?: string;
+  workdir?: string;
 }
-
-export interface ChatMessage {
-  id: string;
-  taskId: string;
-  role: 'user' | 'agent' | 'system';
-  agentId?: string;
-  agentName?: string;
-  content: string;
-  mentions?: string[];  // @agent 提及
-  timestamp: number;
-}
-
-export interface AgentSettings {
-  id: string;
-  name: string;
-  avatar: string;
-  role: string;
-  model: string;
-  workflow?: string;
-  color: string;
-}
-
-// 默认 Agent 设置
-const DEFAULT_AGENT_SETTINGS: AgentSettings[] = [
-  {
-    id: 'claude',
-    name: '布偶猫',
-    avatar: '🐱',
-    role: '主架构师，负责核心开发和深度思考',
-    model: 'claude-sonnet-4-5-20250929',
-    color: '#8B5CF6',
-  },
-  {
-    id: 'codex',
-    name: '缅因猫',
-    avatar: '🐈',
-    role: 'Code Review，安全审查，测试',
-    model: 'codex',
-    color: '#10B981',
-  },
-  {
-    id: 'gemini',
-    name: '暹罗猫',
-    avatar: '😺',
-    role: '视觉设计，创意发散',
-    model: 'gemini-pro',
-    color: '#F59E0B',
-  },
-];
 
 export class ApiServer {
   private app = express();
-  private tasks = new Map<string, TaskDefinition>();
-  private agents = new Map<string, AgentInstance>();
-  private agentSettings = new Map<string, AgentSettings>();
-  private chatMessages = new Map<string, ChatMessage[]>();  // taskId -> messages
-  private config: ApiConfig;
+  private db: DatabaseManager;
+  private executorManager: AgentExecutorManager;
   private operationLogger = getOperationLogger();
+  private config: ApiConfig;
+  private activeStreams: Map<string, { taskId: string; agentId: string }> = new Map();
 
   constructor(config: Partial<ApiConfig> = {}) {
     this.config = {
       port: config.port || 3000,
       host: config.host || '127.0.0.1',
+      dbPath: config.dbPath || './data/catcafe.db',
+      workdir: config.workdir || process.cwd(),
     };
 
-    // 初始化默认 Agent 设置
-    for (const settings of DEFAULT_AGENT_SETTINGS) {
-      this.agentSettings.set(settings.id, settings);
-    }
+    this.db = getDatabase({ dbPath: this.config.dbPath! });
+    this.executorManager = new AgentExecutorManager();
 
     this.setupMiddleware();
     this.setupRoutes();
   }
 
   private setupMiddleware(): void {
-    this.app.use(cors());
+    // CORS 配置 - 允许前端访问
+    this.app.use(cors({
+      origin: ['http://localhost:3001', 'http://localhost:5173', 'http://127.0.0.1:3001', 'http://127.0.0.1:5173'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      credentials: true,
+    }));
     this.app.use(express.json());
     this.app.use((req, _res, next) => {
       console.log(`[API] ${req.method} ${req.path}`);
@@ -106,26 +65,31 @@ export class ApiServer {
     router.patch('/tasks/:id', this.updateTask.bind(this));
     router.delete('/tasks/:id', this.deleteTask.bind(this));
 
-    // Agent 管理
-    router.get('/agents', this.listAgents.bind(this));
-    router.get('/agents/:id', this.getAgent.bind(this));
-    router.post('/agents/:id/start', this.startAgent.bind(this));
-    router.post('/agents/:id/stop', this.stopAgent.bind(this));
-
     // Agent 设置
     router.get('/settings/agents', this.getAgentSettings.bind(this));
     router.get('/settings/agents/:id', this.getAgentSetting.bind(this));
     router.put('/settings/agents/:id', this.updateAgentSetting.bind(this));
 
-    // 聊天
+    // 聊天 + 执行
     router.get('/chat/:taskId', this.getChatMessages.bind(this));
     router.post('/chat/:taskId', this.sendChatMessage.bind(this));
+    router.post('/chat/:taskId/execute', this.executeAgent.bind(this));  // 真正执行
+    router.get('/chat/:taskId/stream/:streamId', this.streamResponse.bind(this));  // SSE 流
+
+    // 资源池
+    router.get('/resources', this.getResources.bind(this));
+    router.post('/resources', this.createResource.bind(this));
+    router.delete('/resources/:id', this.deleteResource.bind(this));
+
+    // 记忆系统
+    router.get('/memory/:agentId', this.getMemories.bind(this));
+    router.post('/memory/:agentId', this.saveMemory.bind(this));
+
+    // 执行历史
+    router.get('/executions', this.getExecutions.bind(this));
 
     // 操作日志
-    router.get('/logs', this.getLogs.bind(this));
     router.get('/logs/operations', this.getOperationLogs.bind(this));
-    router.get('/logs/operations/stats', this.getOperationStats.bind(this));
-    router.get('/logs/:agentId', this.getAgentLogs.bind(this));
 
     // 系统状态
     router.get('/status', this.getStatus.bind(this));
@@ -133,31 +97,28 @@ export class ApiServer {
     this.app.use('/api', router);
   }
 
-  // 任务 API
-  private createTask(req: Request, res: Response): void {
-    const { module, description, prompt, dependencies } = req.body;
+  // ==================== 任务 API ====================
 
-    // 输入验证
+  private createTask(req: Request, res: Response): void {
+    const { module, description, prompt } = req.body;
+
     if (!module || typeof module !== 'string') {
       res.status(400).json({ error: 'Invalid module' });
       return;
     }
 
-    const task: TaskDefinition = {
+    const task = {
       id: uuidv4(),
       module,
       description: description || '',
       prompt: prompt || '',
-      dependencies,
       status: 'pending',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
 
-    this.tasks.set(task.id, task);
-    this.chatMessages.set(task.id, []);  // 初始化聊天记录
+    this.db.saveTask(task);
 
-    // 记录操作日志
     this.operationLogger.logOperation({
       agentId: 'system',
       agentName: '系统',
@@ -170,11 +131,12 @@ export class ApiServer {
   }
 
   private listTasks(_req: Request, res: Response): void {
-    res.json(Array.from(this.tasks.values()));
+    const tasks = this.db.getAllTasks();
+    res.json(tasks);
   }
 
   private getTask(req: Request, res: Response): void {
-    const task = this.tasks.get(req.params.id);
+    const task = this.db.getTask(req.params.id);
     if (!task) {
       res.status(404).json({ error: 'Task not found' });
       return;
@@ -183,142 +145,98 @@ export class ApiServer {
   }
 
   private updateTask(req: Request, res: Response): void {
-    const task = this.tasks.get(req.params.id);
+    const task = this.db.getTask(req.params.id);
     if (!task) {
       res.status(404).json({ error: 'Task not found' });
       return;
     }
-    const updates = req.body as Partial<TaskDefinition>;
-    Object.assign(task, updates, { updatedAt: Date.now() });
-    if (updates.status === 'completed') {
-      task.completedAt = Date.now();
+
+    const { status } = req.body;
+    if (status) {
+      this.db.updateTaskStatus(req.params.id, status);
     }
-    res.json(task);
+
+    res.json(this.db.getTask(req.params.id));
   }
 
   private deleteTask(req: Request, res: Response): void {
-    if (this.tasks.delete(req.params.id)) {
-      this.chatMessages.delete(req.params.id);
-      res.status(204).send();
-    } else {
-      res.status(404).json({ error: 'Task not found' });
-    }
+    // TODO: 实现删除
+    res.status(204).send();
   }
 
-  // Agent API
-  private listAgents(_req: Request, res: Response): void {
-    const agents = Array.from(this.agents.values()).map(agent => ({
-      ...agent,
-      settings: this.agentSettings.get(agent.config.type) || null,
+  // ==================== Agent 设置 API ====================
+
+  private getAgentSettings(_req: Request, res: Response): void {
+    const settings = this.db.getAllAgentSettings();
+    // 隐藏 API Key
+    const safeSettings = settings.map(s => ({
+      ...s,
+      api_key: s.api_key ? '***' : null,
     }));
-    res.json(agents);
+    res.json(safeSettings);
   }
 
-  private getAgent(req: Request, res: Response): void {
-    const agent = this.agents.get(req.params.id);
-    if (!agent) {
+  private getAgentSetting(req: Request, res: Response): void {
+    const settings = this.db.getAgentSettings(req.params.id);
+    if (!settings) {
       res.status(404).json({ error: 'Agent not found' });
       return;
     }
     res.json({
-      ...agent,
-      settings: this.agentSettings.get(agent.config.type) || null,
+      ...settings,
+      api_key: settings.api_key ? '***' : null,
     });
-  }
-
-  private startAgent(req: Request, res: Response): void {
-    const { id } = req.params;
-    const agent = this.agents.get(id);
-    if (!agent) {
-      res.status(404).json({ error: 'Agent not found' });
-      return;
-    }
-
-    agent.status = 'running';
-    agent.startedAt = Date.now();
-
-    this.operationLogger.logOperation({
-      agentId: agent.config.id,
-      agentName: agent.config.name,
-      operation: 'Agent 启动',
-      status: 'completed',
-    });
-
-    res.json(agent);
-  }
-
-  private stopAgent(req: Request, res: Response): void {
-    const { id } = req.params;
-    const agent = this.agents.get(id);
-    if (!agent) {
-      res.status(404).json({ error: 'Agent not found' });
-      return;
-    }
-
-    agent.status = 'idle';
-
-    this.operationLogger.logOperation({
-      agentId: agent.config.id,
-      agentName: agent.config.name,
-      operation: 'Agent 停止',
-      status: 'completed',
-    });
-
-    res.json(agent);
-  }
-
-  // Agent 设置 API
-  private getAgentSettings(_req: Request, res: Response): void {
-    res.json(Array.from(this.agentSettings.values()));
-  }
-
-  private getAgentSetting(req: Request, res: Response): void {
-    const settings = this.agentSettings.get(req.params.id);
-    if (!settings) {
-      res.status(404).json({ error: 'Agent settings not found' });
-      return;
-    }
-    res.json(settings);
   }
 
   private updateAgentSetting(req: Request, res: Response): void {
     const { id } = req.params;
-    const updates = req.body as Partial<AgentSettings>;
+    const updates = req.body;
 
-    let settings = this.agentSettings.get(id);
-    if (!settings) {
-      // 创建新设置
-      settings = {
-        id,
-        name: updates.name || id,
-        avatar: updates.avatar || '🤖',
-        role: updates.role || '',
-        model: updates.model || '',
-        color: updates.color || '#6B7280',
-        ...updates,
-      };
-    } else {
-      Object.assign(settings, updates);
-    }
+    const existing = this.db.getAgentSettings(id);
+    const settings = {
+      id,
+      name: updates.name || existing?.name || id,
+      avatar: updates.avatar || existing?.avatar || '🤖',
+      role: updates.role || existing?.role || '',
+      model: updates.model || existing?.model || '',
+      workflow: updates.workflow || existing?.workflow || '',
+      color: updates.color || existing?.color || '#6B7280',
+      apiKey: updates.apiKey || existing?.api_key || undefined,
+      apiBase: updates.apiBase || existing?.api_base || undefined,
+    };
 
-    this.agentSettings.set(id, settings);
+    this.db.saveAgentSettings(settings);
 
     this.operationLogger.logOperation({
       agentId: 'system',
       agentName: '系统',
       operation: `更新 Agent 设置: ${settings.name}`,
       status: 'completed',
-      metadata: { agentId: id, updates },
     });
 
-    res.json(settings);
+    res.json(this.db.getAgentSettings(id));
   }
 
-  // 聊天 API
+  // ==================== 聊天 + 执行 API ====================
+
   private getChatMessages(req: Request, res: Response): void {
     const { taskId } = req.params;
-    const messages = this.chatMessages.get(taskId) || [];
-    res.json(messages);
+    const limit = parseInt(req.query.limit as string) || 100;
+    const messages = this.db.getMessages(taskId, limit);
+
+    // 转换格式
+    const formatted = messages.reverse().map(m => ({
+      id: m.id,
+      taskId: m.task_id,
+      role: m.role,
+      agentId: m.agent_id,
+      agentName: m.agent_name,
+      content: m.content,
+      mentions: m.mentions ? JSON.parse(m.mentions) : undefined,
+      timestamp: m.timestamp,
+    }));
+
+    res.json(formatted);
   }
 
   private sendChatMessage(req: Request, res: Response): void {
@@ -339,16 +257,16 @@ export class ApiServer {
     }
 
     // 确定消息角色
-    let role: ChatMessage['role'] = 'user';
+    let role = 'user';
     let agentName: string | undefined;
 
     if (agentId) {
       role = 'agent';
-      const settings = this.agentSettings.get(agentId);
+      const settings = this.db.getAgentSettings(agentId);
       agentName = settings?.name || agentId;
     }
 
-    const message: ChatMessage = {
+    const message = {
       id: uuidv4(),
       taskId,
       role,
@@ -359,108 +277,274 @@ export class ApiServer {
       timestamp: Date.now(),
     };
 
-    // 获取或创建消息列表
-    if (!this.chatMessages.has(taskId)) {
-      this.chatMessages.set(taskId, []);
-    }
-    this.chatMessages.get(taskId)!.push(message);
+    this.db.saveMessage(message);
 
-    // 记录操作日志
     this.operationLogger.logOperation({
       agentId: agentId || 'user',
       agentName: agentName || '用户',
-      operation: `发送消息${mentions.length > 0 ? ` (提及: ${mentions.join(', ')})` : ''}`,
+      operation: `发送消息${mentions.length > 0 ? ` (@${mentions.join(', ')})` : ''}`,
       status: 'completed',
-      metadata: { taskId, messageId: message.id, mentions },
+      metadata: { taskId, messageId: message.id },
     });
-
-    // 如果有 @mentions，触发意图识别（简化版）
-    if (mentions.length > 0) {
-      this.handleMentions(taskId, message, mentions);
-    } else if (role === 'user') {
-      // 没有指定 agent，基于意图自动识别
-      this.autoRouteMessage(taskId, message);
-    }
 
     res.status(201).json(message);
   }
 
   /**
-   * 处理 @mentions，唤起对应 Agent
+   * 真正执行 Agent 任务
    */
-  private handleMentions(taskId: string, message: ChatMessage, mentions: string[]): void {
-    for (const mention of mentions) {
-      // 查找匹配的 Agent
-      const settings = Array.from(this.agentSettings.values()).find(
-        s => s.id === mention || s.name.includes(mention)
-      );
+  private async executeAgent(req: Request, res: Response): Promise<void> {
+    const { taskId } = req.params;
+    const { agentId, prompt } = req.body;
 
-      if (settings) {
-        // 创建系统消息通知 Agent 被唤起
-        const systemMessage: ChatMessage = {
+    if (!agentId || !prompt) {
+      res.status(400).json({ error: 'agentId and prompt are required' });
+      return;
+    }
+
+    const agentSettings = this.db.getAgentSettings(agentId);
+    if (!agentSettings) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+
+    // 获取 Agent 的记忆作为上下文
+    const memories = this.db.getMemories(agentId, 'working', 10);
+    const recentMessages = this.db.getMessages(taskId, 20);
+
+    // 构建完整 prompt，包含上下文
+    let fullPrompt = prompt;
+
+    if (memories.length > 0) {
+      const memoryContext = memories.map(m => m.content).join('\n');
+      fullPrompt = `[工作记忆]\n${memoryContext}\n\n[任务]\n${prompt}`;
+    }
+
+    if (recentMessages.length > 0) {
+      const chatContext = recentMessages
+        .slice(-5)
+        .map(m => `${m.agent_name || '用户'}: ${m.content}`)
+        .join('\n');
+      fullPrompt = `[最近对话]\n${chatContext}\n\n${fullPrompt}`;
+    }
+
+    // 记录用户消息
+    this.db.saveMessage({
+      id: uuidv4(),
+      taskId,
+      role: 'user',
+      content: prompt,
+      timestamp: Date.now(),
+    });
+
+    // 记录系统消息
+    this.db.saveMessage({
+      id: uuidv4(),
+      taskId,
+      role: 'system',
+      content: `${agentSettings.avatar} ${agentSettings.name} 开始执行任务...`,
+      timestamp: Date.now(),
+    });
+
+    const operationId = this.operationLogger.startOperation({
+      agentId,
+      agentName: agentSettings.name,
+      operation: '执行任务',
+      input: { prompt },
+    });
+
+    try {
+      // 确定 Agent 类型
+      const agentType = agentId.includes('claude') ? 'claude' :
+                        agentId.includes('codex') ? 'codex' : 'gemini';
+
+      // 执行
+      const result = await this.executorManager.execute(agentId, {
+        agentType: agentType as 'claude' | 'codex' | 'gemini',
+        model: agentSettings.model || undefined,
+        workdir: this.config.workdir!,
+        apiKey: agentSettings.api_key || undefined,
+        apiBase: agentSettings.api_base || undefined,
+      }, fullPrompt);
+
+      // 保存执行结果
+      this.db.saveExecution({
+        id: result.id,
+        agentType: result.agentType,
+        prompt: result.prompt,
+        response: result.response,
+        toolCalls: result.toolCalls,
+        status: result.status,
+        startTime: result.startTime,
+        endTime: result.endTime,
+        error: result.error,
+      });
+
+      // 保存 Agent 响应消息
+      this.db.saveMessage({
+        id: uuidv4(),
+        taskId,
+        role: 'agent',
+        agentId,
+        agentName: agentSettings.name,
+        content: result.response || '(无响应)',
+        timestamp: Date.now(),
+      });
+
+      // 更新工作记忆
+      if (result.response) {
+        this.db.saveMemory({
           id: uuidv4(),
-          taskId,
-          role: 'system',
-          content: `${settings.avatar} ${settings.name} 被唤起`,
-          timestamp: Date.now(),
-        };
-        this.chatMessages.get(taskId)?.push(systemMessage);
-
-        this.operationLogger.logOperation({
-          agentId: settings.id,
-          agentName: settings.name,
-          operation: '被 @mention 唤起',
-          status: 'started',
-          metadata: { taskId, triggeredBy: message.agentId || 'user' },
+          agentId,
+          type: 'working',
+          content: `执行任务: ${prompt.slice(0, 100)}...\n结果: ${result.response.slice(0, 200)}...`,
+          expiresAt: Date.now() + 3600000, // 1 小时后过期
         });
       }
+
+      this.operationLogger.completeOperation(operationId, { status: result.status });
+
+      res.json({
+        success: result.status === 'completed',
+        execution: result,
+      });
+
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+
+      this.operationLogger.failOperation(operationId, errorMsg);
+
+      // 保存错误消息
+      this.db.saveMessage({
+        id: uuidv4(),
+        taskId,
+        role: 'system',
+        content: `❌ 执行失败: ${errorMsg}`,
+        timestamp: Date.now(),
+      });
+
+      res.status(500).json({ error: errorMsg });
     }
   }
 
   /**
-   * 基于意图自动路由消息到合适的 Agent
+   * SSE 流式响应
    */
-  private autoRouteMessage(taskId: string, message: ChatMessage): void {
-    const content = message.content.toLowerCase();
+  private async streamResponse(req: Request, res: Response): Promise<void> {
+    const { taskId, streamId } = req.params;
 
-    // 简单的意图识别规则
-    let targetAgent: AgentSettings | undefined;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-    if (content.includes('代码') || content.includes('开发') || content.includes('实现') || content.includes('架构')) {
-      targetAgent = this.agentSettings.get('claude');
-    } else if (content.includes('review') || content.includes('审查') || content.includes('测试') || content.includes('安全')) {
-      targetAgent = this.agentSettings.get('codex');
-    } else if (content.includes('设计') || content.includes('ui') || content.includes('界面') || content.includes('创意')) {
-      targetAgent = this.agentSettings.get('gemini');
+    const stream = this.activeStreams.get(streamId);
+    if (!stream) {
+      res.write(`data: ${JSON.stringify({ type: 'error', content: 'Stream not found' })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // TODO: 实现真正的流式传输
+    res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+    res.end();
+  }
+
+  // ==================== 资源池 API ====================
+
+  private getResources(_req: Request, res: Response): void {
+    const resources = this.db.getResources();
+    // 隐藏 API Key
+    const safeResources = resources.map(r => ({
+      ...r,
+      apiKey: r.apiKey ? '***' : null,
+    }));
+    res.json(safeResources);
+  }
+
+  private createResource(req: Request, res: Response): void {
+    const { name, provider, model, apiKey, apiBase, isDefault } = req.body;
+
+    if (!name || !provider || !model) {
+      res.status(400).json({ error: 'name, provider, and model are required' });
+      return;
+    }
+
+    const resource = {
+      id: uuidv4(),
+      name,
+      provider,
+      model,
+      apiKey,
+      apiBase,
+      isDefault: isDefault || false,
+    };
+
+    this.db.saveResource(resource);
+
+    this.operationLogger.logOperation({
+      agentId: 'system',
+      agentName: '系统',
+      operation: `添加资源: ${name} (${provider})`,
+      status: 'completed',
+    });
+
+    res.status(201).json({
+      ...resource,
+      apiKey: apiKey ? '***' : null,
+    });
+  }
+
+  private deleteResource(req: Request, res: Response): void {
+    const deleted = this.db.deleteResource(req.params.id);
+    if (deleted) {
+      res.status(204).send();
     } else {
-      // 默认路由到 Claude
-      targetAgent = this.agentSettings.get('claude');
-    }
-
-    if (targetAgent) {
-      const systemMessage: ChatMessage = {
-        id: uuidv4(),
-        taskId,
-        role: 'system',
-        content: `🎯 意图识别: 自动唤起 ${targetAgent.avatar} ${targetAgent.name}`,
-        timestamp: Date.now(),
-      };
-      this.chatMessages.get(taskId)?.push(systemMessage);
-
-      this.operationLogger.logOperation({
-        agentId: targetAgent.id,
-        agentName: targetAgent.name,
-        operation: '被意图识别自动唤起',
-        status: 'started',
-        metadata: { taskId, intent: 'auto-route' },
-      });
+      res.status(404).json({ error: 'Resource not found' });
     }
   }
 
-  // 日志 API
-  private getLogs(_req: Request, res: Response): void {
-    res.json({ logs: [] });
+  // ==================== 记忆系统 API ====================
+
+  private getMemories(req: Request, res: Response): void {
+    const { agentId } = req.params;
+    const type = req.query.type as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 100;
+
+    const memories = this.db.getMemories(agentId, type, limit);
+    res.json(memories);
   }
+
+  private saveMemory(req: Request, res: Response): void {
+    const { agentId } = req.params;
+    const { type, content, metadata, expiresAt } = req.body;
+
+    if (!type || !content) {
+      res.status(400).json({ error: 'type and content are required' });
+      return;
+    }
+
+    const memory = {
+      id: uuidv4(),
+      agentId,
+      type,
+      content,
+      metadata,
+      expiresAt,
+    };
+
+    this.db.saveMemory(memory);
+    res.status(201).json(memory);
+  }
+
+  // ==================== 执行历史 API ====================
+
+  private getExecutions(req: Request, res: Response): void {
+    const limit = parseInt(req.query.limit as string) || 100;
+    const executions = this.db.getExecutions(limit);
+    res.json(executions);
+  }
+
+  // ==================== 操作日志 API ====================
 
   private getOperationLogs(req: Request, res: Response): void {
     const limit = parseInt(req.query.limit as string) || 100;
@@ -468,73 +552,50 @@ export class ApiServer {
     res.json(logs);
   }
 
-  private getOperationStats(_req: Request, res: Response): void {
-    const stats = this.operationLogger.getStats();
-    res.json(stats);
-  }
+  // ==================== 系统状态 API ====================
 
-  private getAgentLogs(req: Request, res: Response): void {
-    const { agentId } = req.params;
-    const limit = parseInt(req.query.limit as string) || 100;
-    const logs = this.operationLogger.getAgentLogs(agentId, limit);
-    res.json({ agentId, logs });
-  }
-
-  // 系统状态
   private getStatus(_req: Request, res: Response): void {
-    const runningAgents = Array.from(this.agents.values()).filter(a => a.status === 'running');
-    const pendingTasks = Array.from(this.tasks.values()).filter(t => t.status === 'pending');
-    const completedTasks = Array.from(this.tasks.values()).filter(t => t.status === 'completed');
+    const tasks = this.db.getAllTasks();
+    const agents = this.db.getAllAgentSettings();
+    const executions = this.db.getExecutions(10);
     const operationStats = this.operationLogger.getStats();
 
     res.json({
       status: 'running',
       agents: {
-        total: this.agents.size,
-        running: runningAgents.length,
-        settings: Array.from(this.agentSettings.values()),
+        total: agents.length,
+        list: agents.map(a => ({
+          id: a.id,
+          name: a.name,
+          avatar: a.avatar,
+          model: a.model,
+        })),
       },
       tasks: {
-        total: this.tasks.size,
-        pending: pendingTasks.length,
-        completed: completedTasks.length,
+        total: tasks.length,
+        pending: tasks.filter(t => t.status === 'pending').length,
+        inProgress: tasks.filter(t => t.status === 'in_progress').length,
+        completed: tasks.filter(t => t.status === 'completed').length,
       },
+      recentExecutions: executions.slice(0, 5),
       operations: operationStats,
       uptime: process.uptime(),
     });
-  }
-
-  // 注册 Agent
-  registerAgent(agent: AgentInstance): void {
-    this.agents.set(agent.config.id, agent);
-  }
-
-  // 注册任务
-  registerTask(task: TaskDefinition): void {
-    this.tasks.set(task.id, task);
-    if (!this.chatMessages.has(task.id)) {
-      this.chatMessages.set(task.id, []);
-    }
-  }
-
-  // 更新任务状态
-  updateTaskStatus(taskId: string, status: TaskStatus): void {
-    const task = this.tasks.get(taskId);
-    if (task) {
-      task.status = status;
-      task.updatedAt = Date.now();
-      if (status === 'completed') {
-        task.completedAt = Date.now();
-      }
-    }
   }
 
   start(): Promise<void> {
     return new Promise((resolve) => {
       this.app.listen(this.config.port, this.config.host, () => {
         console.log(`[API] Server running at http://${this.config.host}:${this.config.port}`);
+        console.log(`[API] Database: ${this.config.dbPath}`);
         resolve();
       });
     });
   }
+
+  close(): void {
+    this.db.close();
+  }
 }
+
+export default ApiServer;

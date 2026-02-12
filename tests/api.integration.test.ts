@@ -1,38 +1,39 @@
 /**
  * API 服务器集成测试
+ * 适配新的数据库持久化 API
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ApiServer } from '../src/api/server.js';
+import { existsSync, rmSync } from 'fs';
 
 describe('ApiServer 集成测试', () => {
   let server: ApiServer;
-  const port = 3001; // 使用不同端口避免冲突
+  const port = 3099; // 使用不同端口避免冲突
+  const testDbPath = './data/test-api.db';
 
   beforeAll(async () => {
-    server = new ApiServer({ port, host: '127.0.0.1' });
+    // 清理测试数据库
+    if (existsSync(testDbPath)) {
+      rmSync(testDbPath);
+    }
 
-    // 注册测试数据
-    server.registerAgent({
-      config: { id: 'test-agent', type: 'claude', name: 'Test Agent' },
-      status: 'idle',
-    });
-
-    server.registerTask({
-      id: 'test-task',
-      module: 'test',
-      description: 'Test task',
-      prompt: 'Test',
-      status: 'pending',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+    server = new ApiServer({
+      port,
+      host: '127.0.0.1',
+      dbPath: testDbPath,
+      workdir: process.cwd(),
     });
 
     await server.start();
   });
 
   afterAll(() => {
-    // Server doesn't have a stop method, but tests will end
+    server.close();
+    // 清理测试数据库
+    if (existsSync(testDbPath)) {
+      rmSync(testDbPath);
+    }
   });
 
   describe('GET /api/status', () => {
@@ -47,14 +48,15 @@ describe('ApiServer 集成测试', () => {
     });
   });
 
-  describe('GET /api/agents', () => {
-    it('should return agent list', async () => {
-      const response = await fetch(`http://127.0.0.1:${port}/api/agents`);
+  describe('GET /api/settings/agents', () => {
+    it('should return agent settings list', async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/api/settings/agents`);
       const data = await response.json();
 
       expect(response.status).toBe(200);
       expect(Array.isArray(data)).toBe(true);
-      expect(data.length).toBeGreaterThan(0);
+      // 默认有三个 Agent
+      expect(data.length).toBe(3);
     });
   });
 
@@ -86,29 +88,70 @@ describe('ApiServer 集成测试', () => {
       expect(data.module).toBe('new-module');
       expect(data.status).toBe('pending');
     });
+
+    it('should reject invalid task', async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      expect(response.status).toBe(400);
+    });
   });
 
-  describe('PATCH /api/tasks/:id', () => {
-    it('should update task status', async () => {
-      const response = await fetch(`http://127.0.0.1:${port}/api/tasks/test-task`, {
-        method: 'PATCH',
+  describe('资源池 API', () => {
+    it('should create and list resources', async () => {
+      // 创建资源
+      const createResponse = await fetch(`http://127.0.0.1:${port}/api/resources`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'in_progress' }),
+        body: JSON.stringify({
+          name: 'Test API',
+          provider: 'openai',
+          model: 'gpt-4',
+          apiKey: 'test-key',
+        }),
       });
-      const data = await response.json();
+      const created = await createResponse.json();
 
-      expect(response.status).toBe(200);
-      expect(data.status).toBe('in_progress');
+      expect(createResponse.status).toBe(201);
+      expect(created.name).toBe('Test API');
+      expect(created.apiKey).toBe('***'); // API Key 应该被隐藏
+
+      // 列出资源
+      const listResponse = await fetch(`http://127.0.0.1:${port}/api/resources`);
+      const resources = await listResponse.json();
+
+      expect(listResponse.status).toBe(200);
+      expect(resources.length).toBeGreaterThan(0);
     });
+  });
 
-    it('should return 404 for non-existent task', async () => {
-      const response = await fetch(`http://127.0.0.1:${port}/api/tasks/non-existent`, {
-        method: 'PATCH',
+  describe('记忆系统 API', () => {
+    it('should save and retrieve memories', async () => {
+      const agentId = 'claude';
+
+      // 保存记忆
+      const saveResponse = await fetch(`http://127.0.0.1:${port}/api/memory/${agentId}`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'completed' }),
+        body: JSON.stringify({
+          type: 'working',
+          content: 'Test memory content',
+        }),
       });
+      const saved = await saveResponse.json();
 
-      expect(response.status).toBe(404);
+      expect(saveResponse.status).toBe(201);
+      expect(saved.content).toBe('Test memory content');
+
+      // 获取记忆
+      const getResponse = await fetch(`http://127.0.0.1:${port}/api/memory/${agentId}`);
+      const memories = await getResponse.json();
+
+      expect(getResponse.status).toBe(200);
+      expect(memories.length).toBeGreaterThan(0);
     });
   });
 });

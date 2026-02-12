@@ -7,3 +7,16 @@ logs/
 agents/logs/
 agents/worktrees/
 *.tsbuildinfo
+
+# Database
+data/
+
+# Test artifacts
+*.png
+test-results/
+playwright-report/
+
+# IDE
+.idea/
+.vscode/
+*.swp

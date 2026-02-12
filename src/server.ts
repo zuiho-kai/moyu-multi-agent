@@ -4,83 +4,38 @@
  */
 
 import { ApiServer } from './api/index.js';
-import { AgentScheduler, LogManager } from './core/index.js';
 
 async function main() {
   console.log('🐱 Cat Café Multi-Agent System');
   console.log('================================\n');
 
-  // 初始化日志
-  const logManager = LogManager.getInstance('./logs');
-  const logger = logManager.getGlobalLogger('main');
-
-  // 初始化调度器
-  const scheduler = new AgentScheduler({
-    maxConcurrentAgents: 5,
+  // 启动 API 服务器（使用数据库持久化）
+  const api = new ApiServer({
+    port: 3000,
+    host: '127.0.0.1',
+    dbPath: './data/catcafe.db',
+    workdir: process.cwd(),
   });
-
-  // 注册示例 Agent
-  scheduler.registerAgent({
-    id: 'claude-main',
-    type: 'claude',
-    name: '布偶猫',
-    model: 'claude-sonnet-4-5-20250929',
-  });
-
-  scheduler.registerAgent({
-    id: 'codex-main',
-    type: 'codex',
-    name: '缅因猫',
-  });
-
-  scheduler.registerAgent({
-    id: 'gemini-main',
-    type: 'gemini',
-    name: '暹罗猫',
-  });
-
-  // 添加示例任务
-  scheduler.addTask({
-    id: 'task-1',
-    module: 'web-api',
-    description: '开发 Web API 模块',
-    prompt: '开发 Web API...',
-    status: 'pending',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  });
-
-  scheduler.addTask({
-    id: 'task-2',
-    module: 'discord-bot',
-    description: '开发 Discord Bot',
-    prompt: '开发 Discord Bot...',
-    status: 'pending',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  });
-
-  // 启动 API 服务器
-  const api = new ApiServer({ port: 3000 });
-
-  // 注册 Agent 和任务到 API
-  for (const agent of scheduler.getAllAgents()) {
-    api.registerAgent(agent);
-  }
-  for (const task of scheduler.getAllTasks()) {
-    api.registerTask(task);
-  }
 
   await api.start();
 
   console.log('\n✅ 系统已启动！');
   console.log('\n📊 API 端点:');
-  console.log('   GET  http://localhost:3000/api/status  - 系统状态');
-  console.log('   GET  http://localhost:3000/api/agents  - Agent 列表');
-  console.log('   GET  http://localhost:3000/api/tasks   - 任务列表');
+  console.log('   GET  http://127.0.0.1:3000/api/status     - 系统状态');
+  console.log('   GET  http://127.0.0.1:3000/api/tasks      - 任务列表');
+  console.log('   POST http://127.0.0.1:3000/api/tasks      - 创建任务');
+  console.log('   GET  http://127.0.0.1:3000/api/chat/:id   - 聊天记录');
+  console.log('   POST http://127.0.0.1:3000/api/chat/:id/execute - 执行 Agent');
+  console.log('   GET  http://127.0.0.1:3000/api/resources  - 资源池');
+  console.log('   GET  http://127.0.0.1:3000/api/executions - 执行历史');
   console.log('\n按 Ctrl+C 停止服务器\n');
 
-  logger.info('System started');
+  // 优雅关闭
+  process.on('SIGINT', () => {
+    console.log('\n正在关闭...');
+    api.close();
+    process.exit(0);
+  });
 }
 
 main().catch(console.error);
