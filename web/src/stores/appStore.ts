@@ -50,6 +50,7 @@ interface ExtendedAppState extends AppState {
   loadTasks: () => Promise<void>
   createTask: (module: string, description: string) => Promise<Task | null>
   loadChatHistory: (taskId: string) => Promise<void>
+  loadAgentSettings: () => Promise<void>
 }
 
 export const useAppStore = create<ExtendedAppState>((set, get) => ({
@@ -136,6 +137,37 @@ export const useAppStore = create<ExtendedAppState>((set, get) => ({
     }
   },
 
+  // 从后端加载 Agent 设置
+  loadAgentSettings: async () => {
+    try {
+      const response = await fetch(`${API_BASE}/settings/agents`)
+      if (response.ok) {
+        const settings = await response.json()
+        const currentAgents = get().agents
+        const updatedAgents = { ...currentAgents }
+
+        for (const setting of settings) {
+          const agentId = setting.id as AgentType
+          if (updatedAgents[agentId]) {
+            updatedAgents[agentId] = {
+              ...updatedAgents[agentId],
+              name: setting.name || updatedAgents[agentId].name,
+              avatar: setting.avatar || updatedAgents[agentId].avatar,
+              role: setting.role || updatedAgents[agentId].role,
+              workflow: setting.workflow || updatedAgents[agentId].workflow,
+              model: setting.model || updatedAgents[agentId].model,
+              color: setting.color || updatedAgents[agentId].color,
+            }
+          }
+        }
+
+        set({ agents: updatedAgents })
+      }
+    } catch (error) {
+      console.error('Failed to load agent settings:', error)
+    }
+  },
+
   addMessage: (message) =>
     set((state) => ({
       messages: [
@@ -148,13 +180,29 @@ export const useAppStore = create<ExtendedAppState>((set, get) => ({
       ],
     })),
 
-  updateAgent: (id, updates) =>
+  updateAgent: async (id, updates) => {
+    // 先更新本地状态
     set((state) => ({
       agents: {
         ...state.agents,
         [id]: { ...state.agents[id], ...updates },
       },
-    })),
+    }))
+
+    // 调用后端 API 持久化设置
+    try {
+      const response = await fetch(`${API_BASE}/settings/agents/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      })
+      if (!response.ok) {
+        console.error('Failed to save agent settings to backend')
+      }
+    } catch (error) {
+      console.error('Failed to save agent settings:', error)
+    }
+  },
 
   addTask: (task) =>
     set((state) => ({
