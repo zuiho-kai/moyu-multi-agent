@@ -1,11 +1,12 @@
 /**
  * 数据库管理器
- * 使用 SQLite 持久化存储
+ * 使用 sql.js (纯 JavaScript SQLite) 持久化存储
  */
 
-import Database from 'better-sqlite3';
+import initSqlJs from 'sql.js';
+import type { Database as SqlJsDatabase } from 'sql.js';
 import path from 'path';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'fs';
 
 export interface DbConfig {
   dbPath: string;
@@ -49,7 +50,7 @@ export interface AgentSettingsRow {
 export interface MemoryRow {
   id: string;
   agent_id: string;
-  type: string;  // working, short_term, long_term, external
+  type: string;
   content: string;
   metadata: string | null;
   created_at: number;
@@ -57,23 +58,49 @@ export interface MemoryRow {
 }
 
 export class DatabaseManager {
-  private db: Database.Database;
+  private db!: SqlJsDatabase;
+  private dbPath: string;
+  private initialized: boolean = false;
+  private initPromise: Promise<void>;
 
   constructor(config: DbConfig = { dbPath: './data/catcafe.db' }) {
-    // 确保目录存在
-    const dir = path.dirname(config.dbPath);
+    this.dbPath = config.dbPath;
+    this.initPromise = this.init();
+  }
+
+  private async init(): Promise<void> {
+    const dir = path.dirname(this.dbPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
 
-    this.db = new Database(config.dbPath);
-    this.db.pragma('journal_mode = WAL');
+    const SQL = await initSqlJs();
+
+    if (existsSync(this.dbPath)) {
+      const buffer = readFileSync(this.dbPath);
+      this.db = new SQL.Database(buffer);
+    } else {
+      this.db = new SQL.Database();
+    }
+
     this.initTables();
+    this.initialized = true;
+  }
+
+  async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initPromise;
+    }
+  }
+
+  private save(): void {
+    const data = this.db.export();
+    const buffer = Buffer.from(data);
+    writeFileSync(this.dbPath, buffer);
   }
 
   private initTables(): void {
-    // 聊天消息表
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -83,13 +110,12 @@ export class DatabaseManager {
         content TEXT NOT NULL,
         mentions TEXT,
         timestamp INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_chat_task ON chat_messages(task_id);
-      CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON chat_messages(timestamp);
+      )
     `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_chat_task ON chat_messages(task_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON chat_messages(timestamp)`);
 
-    // 任务表
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         module TEXT NOT NULL,
@@ -100,12 +126,11 @@ export class DatabaseManager {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         completed_at INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status);
+      )
     `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status)`);
 
-    // Agent 设置表
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS agent_settings (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -116,11 +141,10 @@ export class DatabaseManager {
         color TEXT NOT NULL DEFAULT '#6B7280',
         api_key TEXT,
         api_base TEXT
-      );
+      )
     `);
 
-    // 记忆表（四层记忆）
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -129,13 +153,12 @@ export class DatabaseManager {
         metadata TEXT,
         created_at INTEGER NOT NULL,
         expires_at INTEGER
-      );
-      CREATE INDEX IF NOT EXISTS idx_memory_agent ON memories(agent_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(type);
+      )
     `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_memory_agent ON memories(agent_id)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_memory_type ON memories(type)`);
 
-    // 执行历史表
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS executions (
         id TEXT PRIMARY KEY,
         agent_type TEXT NOT NULL,
@@ -146,13 +169,12 @@ export class DatabaseManager {
         start_time INTEGER NOT NULL,
         end_time INTEGER,
         error TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_exec_agent ON executions(agent_type);
-      CREATE INDEX IF NOT EXISTS idx_exec_time ON executions(start_time);
+      )
     `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_exec_agent ON executions(agent_type)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_exec_time ON executions(start_time)`);
 
-    // 资源池表（API 配置）
-    this.db.exec(`
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS resource_pool (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -162,11 +184,11 @@ export class DatabaseManager {
         api_base TEXT,
         is_default INTEGER DEFAULT 0,
         created_at INTEGER NOT NULL
-      );
+      )
     `);
 
-    // 初始化默认 Agent 设置
     this.initDefaultAgents();
+    this.save();
   }
 
   private initDefaultAgents(): void {
@@ -176,14 +198,29 @@ export class DatabaseManager {
       { id: 'gemini', name: '暹罗猫', avatar: '😺', role: '视觉设计，创意', model: 'gemini-pro', color: '#F59E0B' },
     ];
 
-    const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO agent_settings (id, name, avatar, role, model, color)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
     for (const agent of defaults) {
-      stmt.run(agent.id, agent.name, agent.avatar, agent.role, agent.model, agent.color);
+      this.db.run(
+        `INSERT OR IGNORE INTO agent_settings (id, name, avatar, role, model, color) VALUES (?, ?, ?, ?, ?, ?)`,
+        [agent.id, agent.name, agent.avatar, agent.role, agent.model, agent.color]
+      );
     }
+  }
+
+  private queryAll<T>(sql: string, params: unknown[] = []): T[] {
+    const stmt = this.db.prepare(sql);
+    stmt.bind(params);
+    const results: T[] = [];
+    while (stmt.step()) {
+      const row = stmt.getAsObject() as T;
+      results.push(row);
+    }
+    stmt.free();
+    return results;
+  }
+
+  private queryOne<T>(sql: string, params: unknown[] = []): T | undefined {
+    const results = this.queryAll<T>(sql, params);
+    return results[0];
   }
 
   // ==================== 聊天消息 ====================
@@ -198,34 +235,34 @@ export class DatabaseManager {
     mentions?: string[];
     timestamp: number;
   }): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO chat_messages (id, task_id, role, agent_id, agent_name, content, mentions, timestamp)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      message.id,
-      message.taskId,
-      message.role,
-      message.agentId || null,
-      message.agentName || null,
-      message.content,
-      message.mentions ? JSON.stringify(message.mentions) : null,
-      message.timestamp
+    this.db.run(
+      `INSERT INTO chat_messages (id, task_id, role, agent_id, agent_name, content, mentions, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        message.id,
+        message.taskId,
+        message.role,
+        message.agentId || null,
+        message.agentName || null,
+        message.content,
+        message.mentions ? JSON.stringify(message.mentions) : null,
+        message.timestamp
+      ]
     );
+    this.save();
   }
 
   getMessages(taskId: string, limit = 100): ChatMessageRow[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM chat_messages WHERE task_id = ? ORDER BY timestamp DESC LIMIT ?
-    `);
-    return stmt.all(taskId, limit) as ChatMessageRow[];
+    return this.queryAll<ChatMessageRow>(
+      `SELECT * FROM chat_messages WHERE task_id = ? ORDER BY timestamp DESC LIMIT ?`,
+      [taskId, limit]
+    );
   }
 
   getRecentMessages(limit = 50): ChatMessageRow[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT ?
-    `);
-    return stmt.all(limit) as ChatMessageRow[];
+    return this.queryAll<ChatMessageRow>(
+      `SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT ?`,
+      [limit]
+    );
   }
 
   // ==================== 任务 ====================
@@ -241,40 +278,44 @@ export class DatabaseManager {
     updatedAt: number;
     completedAt?: number;
   }): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO tasks (id, module, description, prompt, status, assigned_agent, created_at, updated_at, completed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      task.id,
-      task.module,
-      task.description || '',
-      task.prompt || '',
-      task.status,
-      task.assignedAgent || null,
-      task.createdAt,
-      task.updatedAt,
-      task.completedAt || null
+    this.db.run(
+      `INSERT OR REPLACE INTO tasks (id, module, description, prompt, status, assigned_agent, created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        task.id,
+        task.module,
+        task.description || '',
+        task.prompt || '',
+        task.status,
+        task.assignedAgent || null,
+        task.createdAt,
+        task.updatedAt,
+        task.completedAt || null
+      ]
     );
+    this.save();
   }
 
   getTask(id: string): TaskRow | undefined {
-    const stmt = this.db.prepare('SELECT * FROM tasks WHERE id = ?');
-    return stmt.get(id) as TaskRow | undefined;
+    return this.queryOne<TaskRow>('SELECT * FROM tasks WHERE id = ?', [id]);
   }
 
   getAllTasks(): TaskRow[] {
-    const stmt = this.db.prepare('SELECT * FROM tasks ORDER BY created_at DESC');
-    return stmt.all() as TaskRow[];
+    return this.queryAll<TaskRow>('SELECT * FROM tasks ORDER BY created_at DESC');
   }
 
   updateTaskStatus(id: string, status: string): void {
-    const stmt = this.db.prepare(`
-      UPDATE tasks SET status = ?, updated_at = ?, completed_at = ?
-      WHERE id = ?
-    `);
     const completedAt = status === 'completed' ? Date.now() : null;
-    stmt.run(status, Date.now(), completedAt, id);
+    this.db.run(
+      `UPDATE tasks SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?`,
+      [status, Date.now(), completedAt, id]
+    );
+    this.save();
+  }
+
+  deleteTask(id: string): boolean {
+    this.db.run('DELETE FROM tasks WHERE id = ?', [id]);
+    this.save();
+    return true;
   }
 
   // ==================== Agent 设置 ====================
@@ -290,31 +331,29 @@ export class DatabaseManager {
     apiKey?: string;
     apiBase?: string;
   }): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO agent_settings (id, name, avatar, role, model, workflow, color, api_key, api_base)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      settings.id,
-      settings.name,
-      settings.avatar,
-      settings.role || null,
-      settings.model || null,
-      settings.workflow || null,
-      settings.color,
-      settings.apiKey || null,
-      settings.apiBase || null
+    this.db.run(
+      `INSERT OR REPLACE INTO agent_settings (id, name, avatar, role, model, workflow, color, api_key, api_base) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        settings.id,
+        settings.name,
+        settings.avatar,
+        settings.role || null,
+        settings.model || null,
+        settings.workflow || null,
+        settings.color,
+        settings.apiKey || null,
+        settings.apiBase || null
+      ]
     );
+    this.save();
   }
 
   getAgentSettings(id: string): AgentSettingsRow | undefined {
-    const stmt = this.db.prepare('SELECT * FROM agent_settings WHERE id = ?');
-    return stmt.get(id) as AgentSettingsRow | undefined;
+    return this.queryOne<AgentSettingsRow>('SELECT * FROM agent_settings WHERE id = ?', [id]);
   }
 
   getAllAgentSettings(): AgentSettingsRow[] {
-    const stmt = this.db.prepare('SELECT * FROM agent_settings');
-    return stmt.all() as AgentSettingsRow[];
+    return this.queryAll<AgentSettingsRow>('SELECT * FROM agent_settings');
   }
 
   // ==================== 记忆系统 ====================
@@ -327,43 +366,39 @@ export class DatabaseManager {
     metadata?: Record<string, unknown>;
     expiresAt?: number;
   }): void {
-    const stmt = this.db.prepare(`
-      INSERT INTO memories (id, agent_id, type, content, metadata, created_at, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      memory.id,
-      memory.agentId,
-      memory.type,
-      memory.content,
-      memory.metadata ? JSON.stringify(memory.metadata) : null,
-      Date.now(),
-      memory.expiresAt || null
+    this.db.run(
+      `INSERT INTO memories (id, agent_id, type, content, metadata, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        memory.id,
+        memory.agentId,
+        memory.type,
+        memory.content,
+        memory.metadata ? JSON.stringify(memory.metadata) : null,
+        Date.now(),
+        memory.expiresAt || null
+      ]
     );
+    this.save();
   }
 
   getMemories(agentId: string, type?: string, limit = 100): MemoryRow[] {
     if (type) {
-      const stmt = this.db.prepare(`
-        SELECT * FROM memories WHERE agent_id = ? AND type = ?
-        AND (expires_at IS NULL OR expires_at > ?)
-        ORDER BY created_at DESC LIMIT ?
-      `);
-      return stmt.all(agentId, type, Date.now(), limit) as MemoryRow[];
+      return this.queryAll<MemoryRow>(
+        `SELECT * FROM memories WHERE agent_id = ? AND type = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT ?`,
+        [agentId, type, Date.now(), limit]
+      );
     } else {
-      const stmt = this.db.prepare(`
-        SELECT * FROM memories WHERE agent_id = ?
-        AND (expires_at IS NULL OR expires_at > ?)
-        ORDER BY created_at DESC LIMIT ?
-      `);
-      return stmt.all(agentId, Date.now(), limit) as MemoryRow[];
+      return this.queryAll<MemoryRow>(
+        `SELECT * FROM memories WHERE agent_id = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC LIMIT ?`,
+        [agentId, Date.now(), limit]
+      );
     }
   }
 
   clearExpiredMemories(): number {
-    const stmt = this.db.prepare('DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?');
-    const result = stmt.run(Date.now());
-    return result.changes;
+    this.db.run('DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?', [Date.now()]);
+    this.save();
+    return 0;
   }
 
   // ==================== 资源池 ====================
@@ -377,20 +412,20 @@ export class DatabaseManager {
     apiBase?: string;
     isDefault?: boolean;
   }): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO resource_pool (id, name, provider, model, api_key, api_base, is_default, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      resource.id,
-      resource.name,
-      resource.provider,
-      resource.model,
-      resource.apiKey || null,
-      resource.apiBase || null,
-      resource.isDefault ? 1 : 0,
-      Date.now()
+    this.db.run(
+      `INSERT OR REPLACE INTO resource_pool (id, name, provider, model, api_key, api_base, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        resource.id,
+        resource.name,
+        resource.provider,
+        resource.model,
+        resource.apiKey || null,
+        resource.apiBase || null,
+        resource.isDefault ? 1 : 0,
+        Date.now()
+      ]
     );
+    this.save();
   }
 
   getResources(): Array<{
@@ -402,8 +437,7 @@ export class DatabaseManager {
     apiBase: string | null;
     isDefault: boolean;
   }> {
-    const stmt = this.db.prepare('SELECT * FROM resource_pool ORDER BY created_at DESC');
-    const rows = stmt.all() as Array<{
+    const rows = this.queryAll<{
       id: string;
       name: string;
       provider: string;
@@ -412,7 +446,7 @@ export class DatabaseManager {
       api_base: string | null;
       is_default: number;
       created_at: number;
-    }>;
+    }>('SELECT * FROM resource_pool ORDER BY created_at DESC');
 
     return rows.map(row => ({
       id: row.id,
@@ -426,9 +460,9 @@ export class DatabaseManager {
   }
 
   deleteResource(id: string): boolean {
-    const stmt = this.db.prepare('DELETE FROM resource_pool WHERE id = ?');
-    const result = stmt.run(id);
-    return result.changes > 0;
+    this.db.run('DELETE FROM resource_pool WHERE id = ?', [id]);
+    this.save();
+    return true;
   }
 
   // ==================== 执行历史 ====================
@@ -444,21 +478,21 @@ export class DatabaseManager {
     endTime?: number;
     error?: string;
   }): void {
-    const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO executions (id, agent_type, prompt, response, tool_calls, status, start_time, end_time, error)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      execution.id,
-      execution.agentType,
-      execution.prompt,
-      execution.response || null,
-      execution.toolCalls ? JSON.stringify(execution.toolCalls) : null,
-      execution.status,
-      execution.startTime,
-      execution.endTime || null,
-      execution.error || null
+    this.db.run(
+      `INSERT OR REPLACE INTO executions (id, agent_type, prompt, response, tool_calls, status, start_time, end_time, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        execution.id,
+        execution.agentType,
+        execution.prompt,
+        execution.response || null,
+        execution.toolCalls ? JSON.stringify(execution.toolCalls) : null,
+        execution.status,
+        execution.startTime,
+        execution.endTime || null,
+        execution.error || null
+      ]
     );
+    this.save();
   }
 
   getExecutions(limit = 100): Array<{
@@ -472,8 +506,7 @@ export class DatabaseManager {
     endTime: number | null;
     error: string | null;
   }> {
-    const stmt = this.db.prepare('SELECT * FROM executions ORDER BY start_time DESC LIMIT ?');
-    const rows = stmt.all(limit) as Array<{
+    const rows = this.queryAll<{
       id: string;
       agent_type: string;
       prompt: string;
@@ -483,7 +516,7 @@ export class DatabaseManager {
       start_time: number;
       end_time: number | null;
       error: string | null;
-    }>;
+    }>('SELECT * FROM executions ORDER BY start_time DESC LIMIT ?', [limit]);
 
     return rows.map(row => ({
       id: row.id,
@@ -499,6 +532,7 @@ export class DatabaseManager {
   }
 
   close(): void {
+    this.save();
     this.db.close();
   }
 }

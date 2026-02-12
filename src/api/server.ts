@@ -354,9 +354,12 @@ export class ApiServer {
     });
 
     try {
-      // 确定 Agent 类型
-      const agentType = agentId.includes('claude') ? 'claude' :
-                        agentId.includes('codex') ? 'codex' : 'gemini';
+      // 根据 model 设置确定 Agent 类型（CLI）
+      const model = (agentSettings.model || '').toLowerCase();
+      const agentType = model.includes('claude') ? 'claude' :
+                        model.includes('codex') ? 'codex' :
+                        model.includes('gemini') ? 'gemini' :
+                        model.includes('gpt') ? 'codex' : 'claude';
 
       // 执行
       const result = await this.executorManager.execute(agentId, {
@@ -583,7 +586,10 @@ export class ApiServer {
     });
   }
 
-  start(): Promise<void> {
+  async start(): Promise<void> {
+    // 等待数据库初始化完成
+    await this.db.ensureInitialized();
+
     return new Promise((resolve) => {
       this.app.listen(this.config.port, this.config.host, () => {
         console.log(`[API] Server running at http://${this.config.host}:${this.config.port}`);

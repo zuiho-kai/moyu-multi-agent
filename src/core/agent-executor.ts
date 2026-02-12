@@ -515,20 +515,19 @@ export class AgentExecutorManager {
    * 创建或获取 Agent 执行器
    */
   getExecutor(agentId: string, config: AgentExecutorConfig): AgentExecutor {
-    if (!this.executors.has(agentId)) {
-      const executor = new AgentExecutor(config);
+    // 每次都创建新的 executor，确保使用最新的 config（model 可能已变更）
+    const executor = new AgentExecutor(config);
 
-      executor.on('start', (execution: ExecutionResult) => {
-        this.executions.set(execution.id, execution);
-      });
+    executor.on('start', (execution: ExecutionResult) => {
+      this.executions.set(execution.id, execution);
+    });
 
-      executor.on('complete', (execution: ExecutionResult) => {
-        this.executions.set(execution.id, execution);
-      });
+    executor.on('complete', (execution: ExecutionResult) => {
+      this.executions.set(execution.id, execution);
+    });
 
-      this.executors.set(agentId, executor);
-    }
-    return this.executors.get(agentId)!;
+    this.executors.set(agentId, executor);
+    return executor;
   }
 
   /**
