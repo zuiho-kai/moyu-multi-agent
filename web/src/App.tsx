@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Settings, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Menu } from 'lucide-react'
 import { useAppStore } from './stores/appStore'
 import Sidebar from './components/Sidebar'
@@ -12,8 +13,14 @@ function App() {
     leftSidebarCollapsed,
     rightSidebarCollapsed,
     toggleLeftSidebar,
-    toggleRightSidebar
+    toggleRightSidebar,
+    loadAgentSettings
   } = useAppStore()
+
+  // 应用启动时加载 Agent 设置
+  useEffect(() => {
+    loadAgentSettings()
+  }, [loadAgentSettings])
 
   return (
     <div className="min-h-screen flex flex-col">
