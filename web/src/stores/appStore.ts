@@ -123,9 +123,9 @@ export const useAppStore = create<ExtendedAppState>((set, get) => ({
       if (response.ok) {
         const messages = await response.json()
         set({
-          messages: messages.map((m: { id: string; role: string; agent_id?: string; content: string; timestamp: number }) => ({
+          messages: messages.map((m: { id: string; role: string; agentId?: string; content: string; timestamp: number }) => ({
             id: m.id,
-            agentId: m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : (m.agent_id || 'system'),
+            agentId: m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : (m.agentId || 'claude'),
             content: m.content,
             timestamp: new Date(m.timestamp),
           })),
